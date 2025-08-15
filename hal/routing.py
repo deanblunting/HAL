@@ -8,8 +8,8 @@ from typing import Dict, List, Set, Tuple, Optional
 import heapq
 from collections import defaultdict, deque
 
-from data_structures import RoutingTier, RoutingResult, RouteSegment
-from config import HALConfig
+from .data_structures import RoutingTier, RoutingResult, RouteSegment
+from .config import HALConfig
 
 
 class AStarPathfinder:

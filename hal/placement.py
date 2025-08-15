@@ -9,9 +9,9 @@ from scipy.optimize import minimize
 import heapq
 from collections import defaultdict
 
-from .graph_utils import CommunityDetector, PlanarityTester, GraphAnalyzer
-from .data_structures import PlacementResult
-from .config import HALConfig
+from graph_utils import CommunityDetector, PlanarityTester, GraphAnalyzer
+from data_structures import PlacementResult
+from config import HALConfig
 
 
 class SpringLayout:

@@ -4,8 +4,8 @@ Hardware cost calculation for HAL algorithm.
 
 import numpy as np
 from typing import Dict, List
-from .config import HALConfig
-from .data_structures import QECCLayout, RoutingResult
+from config import HALConfig
+from data_structures import QECCLayout, RoutingResult
 
 
 class HardwareCostCalculator:

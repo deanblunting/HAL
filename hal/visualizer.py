@@ -10,8 +10,8 @@ from plotly.subplots import make_subplots
 from typing import Dict, List, Tuple, Optional
 import networkx as nx
 
-from .data_structures import QECCLayout, RoutingTier
-from .config import HALConfig
+from data_structures import QECCLayout, RoutingTier
+from config import HALConfig
 
 
 class HALVisualizer:
@@ -282,7 +282,7 @@ class HALVisualizer:
         ax1.set_ylabel('Value')
         
         # Cost contribution (normalized)
-        from .cost import HardwareCostCalculator
+        from cost import HardwareCostCalculator
         calculator = HardwareCostCalculator(self.config)
         breakdown = calculator.calculate_detailed_cost_breakdown(metrics)
         

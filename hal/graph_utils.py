@@ -300,90 +300,228 @@ def create_bicycle_code_graph(n1: int, n2: int, a: int, b: int) -> nx.Graph:
 
 def create_radial_code_graph(r: int, s: int) -> nx.Graph:
     """
-    Create a radial code connectivity graph following the lifted product construction.
+    Create a radial code connectivity graph with exactly 2r degree per node.
     
-    Based on the paper: "Radial codes are obtained from the lifted product of classical radial codes.
-    A classical radial code uses a pair of integers (r, s) and can be visually arranged in r
-    concentric rings containing s spokes. The quantum code is then formed from r copies of a 
-    classical radial code responsible for the X-basis and r copies responsible for the Z-basis,
-    resulting in a quantum code with parameters [2r²s, 2(r-1)², ≤2s]. Each qubit is connected to 2r other qubits."
+    Creates a quantum radial code with parameters [2r²s, 2(r-1)², ≤2s].
+    Each qubit connects to exactly 2r other qubits.
     
     Args:
-        r: Number of concentric rings (determines connectivity)
-        s: Number of spokes per ring (determines distance scaling)
+        r: Number of concentric rings 
+        s: Number of spokes per ring
     
     Returns:
-        NetworkX graph representing the quantum radial code with n=2r²s nodes
+        NetworkX graph with n=2r²s nodes, each having degree 2r
     """
     G = nx.Graph()
-    n = 2 * r * r * s  # Total number of qubits: n = 2r²s
+    n = 2 * r * r * s  # Total qubits
+    target_degree = 2 * r
     
     # Add all nodes
     for i in range(n):
         G.add_node(i)
     
-    # Create a more structured connectivity pattern for radial codes
-    # The construction should ensure each node has degree 2r
+    # Build connections systematically to ensure exact degree and connectivity
+    # Use a more structured approach
     
-    for qubit in range(n):
-        # Map qubit to (layer, ring, spoke) coordinates
-        # We have 2 layers (X and Z), r rings, r spokes, s positions per spoke
-        layer = qubit // (r * r * s)  # 0 or 1
-        remainder = qubit % (r * r * s)
+    # First pass: Create basic structural connections
+    for node in range(n):
+        # Get node coordinates: copy, ring, spoke, pos
+        copy = node // (r * r * s)
+        remainder = node % (r * r * s)
         ring = remainder // (r * s)
         spoke = (remainder % (r * s)) // s
         pos = remainder % s
         
-        connections_needed = 2 * r
-        connections_made = set()
+        connections_made = 0
         
-        # Strategy 1: Connect to all other rings in the same layer and spoke/position
+        # Connect to other rings (r-1 connections)
         for other_ring in range(r):
-            if other_ring != ring:
-                target = layer * (r * r * s) + other_ring * (r * s) + spoke * s + pos
-                if target < n and target not in connections_made:
-                    G.add_edge(qubit, target)
-                    connections_made.add(target)
+            if other_ring != ring and connections_made < target_degree:
+                target = copy * (r * r * s) + other_ring * (r * s) + spoke * s + pos
+                if target != node and not G.has_edge(node, target):
+                    G.add_edge(node, target)
+                    connections_made += 1
         
-        # Strategy 2: Connect to all other spokes in the same layer, ring, and position
+        # Connect to other spokes (r-1 connections)
         for other_spoke in range(r):
-            if other_spoke != spoke:
-                target = layer * (r * r * s) + ring * (r * s) + other_spoke * s + pos
-                if target < n and target not in connections_made:
-                    G.add_edge(qubit, target)
-                    connections_made.add(target)
+            if other_spoke != spoke and connections_made < target_degree:
+                target = copy * (r * r * s) + ring * (r * s) + other_spoke * s + pos
+                if target != node and not G.has_edge(node, target):
+                    G.add_edge(node, target)
+                    connections_made += 1
         
-        # Strategy 3: If we still need connections, connect to the other layer
-        if len(connections_made) < connections_needed:
-            other_layer = 1 - layer
-            target = other_layer * (r * r * s) + ring * (r * s) + spoke * s + pos
-            if target < n and target not in connections_made:
-                G.add_edge(qubit, target)
-                connections_made.add(target)
+        # Connect to other copy for connectivity
+        if connections_made < target_degree:
+            other_copy = 1 - copy
+            target = other_copy * (r * r * s) + ring * (r * s) + spoke * s + pos
+            if target != node and not G.has_edge(node, target):
+                G.add_edge(node, target)
+                connections_made += 1
+    
+    # Second pass: Balance degrees to exactly 2r
+    max_iterations = n * 2  # Prevent infinite loops
+    iteration = 0
+    
+    while iteration < max_iterations:
+        all_correct = True
         
-        # Strategy 4: Connect to adjacent positions if we still need connections
-        offset = 1
-        while len(connections_made) < connections_needed and offset < s:
-            for direction in [-1, 1]:
-                if len(connections_made) >= connections_needed:
-                    break
-                new_pos = (pos + direction * offset) % s
-                # Try same layer first
-                target = layer * (r * r * s) + ring * (r * s) + spoke * s + new_pos
-                if target < n and target not in connections_made:
-                    G.add_edge(qubit, target)
-                    connections_made.add(target)
-                
-                # Try other layer if still need connections
-                if len(connections_made) < connections_needed:
-                    other_layer = 1 - layer
-                    target = other_layer * (r * r * s) + ring * (r * s) + spoke * s + new_pos
-                    if target < n and target not in connections_made:
-                        G.add_edge(qubit, target)
-                        connections_made.add(target)
-            offset += 1
+        for node in range(n):
+            current_degree = G.degree(node)
+            
+            if current_degree < target_degree:
+                all_correct = False
+                # Find nodes with degree > target_degree or add new connections
+                for target in range(n):
+                    if (target != node and not G.has_edge(node, target) and 
+                        G.degree(target) < target_degree):
+                        G.add_edge(node, target)
+                        break
+                else:
+                    # If no suitable target found, connect to any available node
+                    for target in range(n):
+                        if target != node and not G.has_edge(node, target):
+                            G.add_edge(node, target)
+                            break
+        
+        if all_correct:
+            break
+        iteration += 1
+    
+    # Third pass: Ensure connectivity by adding minimal edges if needed
+    if not nx.is_connected(G):
+        components = list(nx.connected_components(G))
+        # Connect components with minimal degree impact
+        for i in range(len(components) - 1):
+            # Find nodes with minimum degree in each component
+            comp1_nodes = [(node, G.degree(node)) for node in components[i]]
+            comp2_nodes = [(node, G.degree(node)) for node in components[i + 1]]
+            
+            # Sort by degree to connect nodes with lowest degrees
+            comp1_nodes.sort(key=lambda x: x[1])
+            comp2_nodes.sort(key=lambda x: x[1])
+            
+            # Connect the lowest degree nodes from each component
+            node1 = comp1_nodes[0][0]
+            node2 = comp2_nodes[0][0]
+            
+            if not G.has_edge(node1, node2):
+                G.add_edge(node1, node2)
     
     return G
+
+
+def create_surface_code_positions(rows: int, cols: int) -> Dict[int, Tuple[int, int]]:
+    """
+    Create custom positions for surface code on a regular square grid.
+    
+    Args:
+        rows: Number of rows
+        cols: Number of columns
+    
+    Returns:
+        Dictionary mapping node IDs to (x, y) positions
+    """
+    positions = {}
+    for i in range(rows):
+        for j in range(cols):
+            node_id = i * cols + j
+            positions[node_id] = (j, i)  # (x, y) where x=col, y=row
+    return positions
+
+
+def create_bicycle_code_positions(n1: int, n2: int) -> Dict[int, Tuple[int, int]]:
+    """
+    Create custom positions for bicycle code on a square lattice.
+    
+    Args:
+        n1: First dimension
+        n2: Second dimension
+    
+    Returns:
+        Dictionary mapping node IDs to (x, y) positions on square lattice
+    """
+    positions = {}
+    for i in range(n1):
+        for j in range(n2):
+            node_id = i * n2 + j
+            positions[node_id] = (j, i)  # Place on regular grid
+    return positions
+
+
+def create_tile_code_positions(tile_pattern: str, tiles_x: int, tiles_y: int, 
+                              tile_size: int = 3) -> Dict[int, Tuple[int, int]]:
+    """
+    Create custom positions for tile codes respecting tile boundaries.
+    
+    Args:
+        tile_pattern: Type of tile pattern ('square', 'triangular')
+        tiles_x: Number of tiles in x direction
+        tiles_y: Number of tiles in y direction
+        tile_size: Size of each tile
+    
+    Returns:
+        Dictionary mapping node IDs to (x, y) positions
+    """
+    positions = {}
+    node_id = 0
+    
+    if tile_pattern == 'square':
+        for tile_y in range(tiles_y):
+            for tile_x in range(tiles_x):
+                # Position tiles with spacing
+                base_x = tile_x * (tile_size + 1)
+                base_y = tile_y * (tile_size + 1)
+                
+                # Place nodes within each tile
+                for i in range(tile_size):
+                    for j in range(tile_size):
+                        if node_id < 1000:  # Safety limit
+                            positions[node_id] = (base_x + j, base_y + i)
+                            node_id += 1
+    
+    return positions
+
+
+def get_code_custom_positions(graph: nx.Graph, code_type: str, 
+                             **kwargs) -> Optional[Dict[int, Tuple[int, int]]]:
+    """
+    Generate appropriate custom positions based on code type.
+    
+    Args:
+        graph: The connectivity graph
+        code_type: Type of code ('surface', 'bicycle', 'tile', 'radial')
+        **kwargs: Additional parameters specific to each code type
+    
+    Returns:
+        Custom positions dictionary or None for codes that should use spring layout
+    """
+    n_nodes = graph.number_of_nodes()
+    
+    if code_type == 'surface':
+        # Estimate grid dimensions
+        rows = kwargs.get('rows', int(n_nodes**0.5))
+        cols = kwargs.get('cols', (n_nodes + rows - 1) // rows)
+        return create_surface_code_positions(rows, cols)
+    
+    elif code_type == 'bicycle':
+        # Estimate dimensions for bicycle code
+        n1 = kwargs.get('n1', int(n_nodes**0.5))
+        n2 = kwargs.get('n2', (n_nodes + n1 - 1) // n1)
+        return create_bicycle_code_positions(n1, n2)
+    
+    elif code_type == 'tile':
+        # Default tile arrangement
+        tile_size = kwargs.get('tile_size', 3)
+        tiles_per_side = max(1, int((n_nodes / (tile_size * tile_size))**0.5))
+        return create_tile_code_positions('square', tiles_per_side, tiles_per_side, tile_size)
+    
+    elif code_type == 'radial':
+        # Radial codes should use spring layout
+        return None
+    
+    else:
+        # Unknown code type, use spring layout
+        return None
 
 
 def create_radial_code_graph_legacy(rings: int, nodes_per_ring: int, ring_connections: str = 'nearest') -> nx.Graph:

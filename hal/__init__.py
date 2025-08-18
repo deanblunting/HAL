@@ -1,8 +1,9 @@
 """
 HAL: Hardware-Aware Layout for Quantum Error Correcting Codes
 
-A Python implementation of the HAL algorithm for placing and routing
-quantum error correcting codes on multi-layer superconducting hardware.
+Advanced Python implementation of the HAL algorithm for optimal placement
+and routing of quantum error correcting codes on multi-tier superconducting
+quantum processor architectures with comprehensive cost optimization.
 """
 
 from .hal import HAL

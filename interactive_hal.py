@@ -21,7 +21,7 @@ from hal.graph_utils import (
 
 
 def get_user_input():
-    """Get [n,k,d] parameters and code type from user."""
+    """Acquire quantum code parameters and type specification from user interface."""
     print("HAL Quantum Error Correcting Code Layout Generator")
     print("=" * 55)
     print()
@@ -68,7 +68,7 @@ def get_user_input():
 
 
 def select_code_type():
-    """Let user select the type of quantum code to generate."""
+    """Present quantum code type selection interface for user specification."""
     print("\nSelect quantum code type:")
     print("1. Surface code (2D grid)")
     print("2. Bicycle code (toric structure)")
@@ -89,10 +89,10 @@ def select_code_type():
 
 
 def generate_code_graph(n, k, d, code_type):
-    """Generate the appropriate quantum code graph based on parameters and type."""
+    """Construct quantum code connectivity graph according to specified parameters and type."""
     
     if code_type == 1:  # Surface code
-        # Estimate grid dimensions from n
+        # Calculate optimal grid dimensions from total qubit count
         rows = int(n**0.5)
         cols = (n + rows - 1) // rows
         print(f"Generating {rows}x{cols} surface code...")
@@ -100,7 +100,7 @@ def generate_code_graph(n, k, d, code_type):
         return graph, 'surface', {'rows': rows, 'cols': cols}
     
     elif code_type == 2:  # Bicycle code
-        # Estimate parameters for bicycle code
+        # Determine bicycle code construction parameters
         n1 = int(n**0.5)
         n2 = (n + n1 - 1) // n1
         a, b = 1, 1  # Simple shift parameters
@@ -109,8 +109,8 @@ def generate_code_graph(n, k, d, code_type):
         return graph, 'bicycle', {'n1': n1, 'n2': n2}
     
     elif code_type == 3:  # Radial code
-        # Estimate r and s from n = 2r²s
-        # Try to find reasonable r and s values
+        # Derive radial code parameters from qubit count constraint
+        # Optimize radial code parameters for target qubit count
         best_r, best_s = 2, max(1, n // 8)
         for r in range(2, int(n**0.33) + 2):
             s = n // (2 * r * r)
@@ -148,7 +148,7 @@ def generate_code_graph(n, k, d, code_type):
     
     elif code_type == 6:  # Auto-detect
         print("Auto-detecting best code type based on parameters...")
-        # Simple heuristics for code selection
+        # Apply heuristic code family selection criteria
         if d <= 5 and n <= 25:
             return generate_code_graph(n, k, d, 1)  # Surface code for small distances
         elif n >= 50 and d >= 10:
@@ -158,7 +158,7 @@ def generate_code_graph(n, k, d, code_type):
 
 
 def configure_hal():
-    """Configure HAL algorithm parameters."""
+    """Initialize HAL algorithm configuration interface."""
     print("\nHAL Algorithm Configuration:")
     print("1. Use default configuration (recommended)")
     print("2. Custom configuration")
@@ -177,7 +177,7 @@ def configure_hal():
 
 
 def configure_custom_hal():
-    """Configure custom HAL parameters."""
+    """Establish custom HAL algorithm parameter configuration."""
     print("\nCustom HAL Configuration:")
     
     # Get max tiers
@@ -216,7 +216,7 @@ def configure_custom_hal():
 
 
 def analyze_and_display_results(hal, layout, graph, n, k, d):
-    """Analyze and display the layout results."""
+    """Execute comprehensive layout analysis and present performance metrics."""
     print("\n" + "=" * 55)
     print("LAYOUT RESULTS")
     print("=" * 55)
@@ -232,7 +232,7 @@ def analyze_and_display_results(hal, layout, graph, n, k, d):
     print(f"  Tiers Used: {len(layout.tiers)}")
     print(f"  Edges Routed: {len(layout.edge_routes)}/{graph.number_of_edges()}")
     
-    # Calculate grid bounds from node positions
+    # Determine grid utilization bounds from node placement
     if layout.node_positions:
         x_coords = [pos[0] for pos in layout.node_positions.values()]
         y_coords = [pos[1] for pos in layout.node_positions.values()]
@@ -250,7 +250,7 @@ def analyze_and_display_results(hal, layout, graph, n, k, d):
             else:
                 print(f"  {metric}: {value}")
     
-    # Perform detailed analysis
+    # Execute comprehensive performance analysis
     try:
         analysis = hal.analyze_layout(layout, detailed=True)
         print(f"\nLayout Analysis:")
@@ -267,7 +267,7 @@ def analyze_and_display_results(hal, layout, graph, n, k, d):
 
 
 def offer_visualization(hal, layout):
-    """Offer visualization options to the user."""
+    """Present visualization interface options for user selection."""
     print("\n" + "=" * 55)
     print("VISUALIZATION OPTIONS")
     print("=" * 55)
@@ -315,7 +315,7 @@ def offer_visualization(hal, layout):
 
 
 def save_results(layout, n, k, d):
-    """Offer to save results to file."""
+    """Provide file output interface for result persistence."""
     print("\n" + "=" * 55)
     print("SAVE RESULTS")
     print("=" * 55)
@@ -330,7 +330,7 @@ def save_results(layout, n, k, d):
                 f.write(f"Hardware Cost: {layout.hardware_cost:.3f}\n")
                 f.write(f"Tiers Used: {len(layout.tiers)}\n")
                 
-                # Calculate and write grid size
+                # Compute and record grid utilization metrics
                 if layout.node_positions:
                     x_coords = [pos[0] for pos in layout.node_positions.values()]
                     y_coords = [pos[1] for pos in layout.node_positions.values()]
@@ -354,14 +354,14 @@ def save_results(layout, n, k, d):
 
 
 def main():
-    """Main interactive loop."""
+    """Execute primary interactive application workflow."""
     try:
         while True:
-            # Get user input
+            # Acquire user specification parameters
             n, k, d = get_user_input()
             code_type = select_code_type()
             
-            # Generate code graph
+            # Construct quantum code connectivity graph
             try:
                 graph, code_family, params = generate_code_graph(n, k, d, code_type)
                 print(f"\nGenerated graph with {graph.number_of_nodes()} nodes and {graph.number_of_edges()} edges")
@@ -369,17 +369,17 @@ def main():
                 print(f"Error generating code graph: {e}")
                 continue
             
-            # Generate custom positions for geometric codes
+            # Generate optimized positions for structured code families
             custom_positions = get_code_custom_positions(graph, code_family, **params)
             if custom_positions:
                 print(f"Using custom {code_family} code positions for structured layout")
             else:
                 print(f"Using spring layout for {code_family} code")
             
-            # Configure HAL
+            # Initialize HAL algorithm configuration
             hal = configure_hal()
             
-            # Generate layout
+            # Execute HAL layout algorithm
             print("\nGenerating optimal layout...")
             try:
                 layout = hal.layout_code(graph, custom_positions=custom_positions, verbose=True)
@@ -388,18 +388,18 @@ def main():
                 print(f"Error generating layout: {e}")
                 continue
             
-            # Analyze and display results
+            # Perform results analysis and presentation
             analyze_and_display_results(hal, layout, graph, n, k, d)
             
-            # Offer visualization
+            # Present visualization interface
             should_exit = offer_visualization(hal, layout)
             if should_exit:
                 break
             
-            # Save results
+            # Execute result persistence
             save_results(layout, n, k, d)
             
-            # Ask if user wants to continue
+            # Query user for workflow continuation
             print("\n" + "=" * 55)
             continue_choice = input("\nGenerate another layout? (y/n): ").lower().strip()
             if continue_choice not in ['y', 'yes']:

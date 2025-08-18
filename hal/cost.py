@@ -16,53 +16,63 @@ class HardwareCostCalculator:
         
     def calculate_cost(self, metrics: Dict[str, float]) -> float:
         """
-        Calculate hardware cost from layout metrics.
+        Compute normalized hardware implementation cost using the four-metric cost model.
         
-        Cost formula: 1 + weighted_average(normalized_costs)
+        Paper formula (Section V): 
+        ci = (qi - bi) / (pi - bi)
+        Chw = 1 + (sum(wi*ci)) / (sum(wi))
+        
+        Where:
+        - ci is the individual cost for metric i
+        - qi is the raw quantity for metric i  
+        - bi is the baseline value (surface code requirements)
+        - pi is the optimistic value (advanced fabrication capabilities)
+        - wi is the weight for metric i
+        - Chw = 1 denotes ideal planar, single-tier, nearest-neighbor layout
         
         Args:
             metrics: Dictionary containing 'tiers', 'length', 'bumps', 'tsvs'
             
         Returns:
-            Hardware cost as float
+            Hardware cost as float (>= 1.0)
         """
-        # Normalize each metric
-        normalized_costs = {}
-        
+        # Extract raw performance metrics from layout results
+        qi_values = {}
         for metric_name in ['tiers', 'length', 'bumps', 'tsvs']:
-            if metric_name not in metrics:
-                normalized_costs[metric_name] = 0.0
-                continue
-                
-            value = metrics[metric_name]
-            baseline = self.config.cost_baselines[metric_name]
-            optimistic = self.config.cost_optimistic[metric_name]
-            
-            # Avoid division by zero
-            if optimistic == baseline:
-                normalized_costs[metric_name] = 0.0
-            else:
-                normalized_costs[metric_name] = (value - baseline) / (optimistic - baseline)
+            qi_values[metric_name] = metrics.get(metric_name, 0.0)
         
-        # Calculate weighted average
+        # Compute normalized cost components using baseline rescaling 
+        ci_values = {}
+        for metric_name in ['tiers', 'length', 'bumps', 'tsvs']:
+            qi = qi_values[metric_name]
+            bi = self.config.cost_baselines[metric_name]  # baseline value
+            pi = self.config.cost_optimistic[metric_name]  # optimistic value
+            
+            # Apply linear normalization transformation
+            if pi == bi:
+                ci_values[metric_name] = 0.0  # Handle degenerate case
+            else:
+                ci_values[metric_name] = (qi - bi) / (pi - bi)
+        
+        # Compute weighted arithmetic mean using the cost model from Section V
         weighted_sum = 0.0
         total_weight = 0.0
         
-        for metric_name, weight in self.config.cost_weights.items():
-            if weight > 0 and metric_name in normalized_costs:
-                weighted_sum += weight * normalized_costs[metric_name]
-                total_weight += weight
+        for metric_name in ['tiers', 'length', 'bumps', 'tsvs']:
+            wi = self.config.cost_weights[metric_name]
+            ci = ci_values[metric_name]
+            
+            weighted_sum += wi * ci
+            total_weight += wi
         
-        # Avoid division by zero
+        # Calculate final normalized hardware cost
         if total_weight == 0:
-            weighted_average = 0.0
+            Chw = 1.0  # Default to optimal case for zero weights
         else:
-            weighted_average = weighted_sum / total_weight
+            Chw = 1.0 + weighted_sum / total_weight
         
-        # Final cost: 1 + weighted_average
-        hardware_cost = max(1.0 + weighted_average, 1.0)
-        
-        return hardware_cost
+        # Enforce minimum cost constraint (optimal planar baseline)
+        return max(Chw, 1.0)
     
     def calculate_detailed_cost_breakdown(self, metrics: Dict[str, float]) -> Dict[str, float]:
         """

@@ -40,14 +40,14 @@ class HAL:
         self.cost_calculator = HardwareCostCalculator(self.config)
         self.visualizer = HALVisualizer(self.config)
         
-        # Set random seed for reproducibility
+        # Initialize random number generator for deterministic results
         np.random.seed(self.config.random_seed)
     
     def layout_code(self, connectivity_graph: nx.Graph, 
                    custom_positions: Optional[Dict[int, Tuple[int, int]]] = None,
                    verbose: bool = False) -> QECCLayout:
         """
-        Main workflow: place nodes, route edges, calculate cost.
+        Execute complete HAL algorithm pipeline: placement, routing, and cost optimization.
         
         Args:
             connectivity_graph: Graph representing QECC connectivity
@@ -63,9 +63,9 @@ class HAL:
             print(f"Starting HAL layout for graph with {connectivity_graph.number_of_nodes()} nodes, "
                   f"{connectivity_graph.number_of_edges()} edges")
         
-        # Step 1: Node Placement
+        # Phase 1: Node Placement
         if verbose:
-            print("Step 1: Placing nodes...")
+            print("Phase 1: Executing node placement...")
         placement_start = time.time()
         
         placement_result = self.placement_engine.place_nodes(
@@ -78,9 +78,9 @@ class HAL:
             print(f"  Grid bounds: {placement_result.grid_bounds}")
             print(f"  Planar edges: {len(placement_result.planar_subgraph_edges)}/{connectivity_graph.number_of_edges()}")
         
-        # Step 2: Edge Routing
+        # Phase 2: Multi-Tier Edge Routing
         if verbose:
-            print("Step 2: Routing edges...")
+            print("Phase 2: Executing multi-tier routing...")
         routing_start = time.time()
         
         routing_result = self.routing_engine.route_edges(
@@ -96,9 +96,9 @@ class HAL:
             print(f"  Unrouted edges: {len(routing_result.unrouted_edges)}")
             print(f"  Tiers used: {len(routing_result.tiers)}")
         
-        # Step 3: Hardware Cost Calculation
+        # Phase 3: Hardware Cost Calculation
         if verbose:
-            print("Step 3: Calculating hardware cost...")
+            print("Phase 3: Computing normalized hardware cost...")
         
         hardware_cost = self.cost_calculator.calculate_cost(routing_result.metrics)
         
@@ -106,24 +106,14 @@ class HAL:
             print(f"  Hardware cost: {hardware_cost:.3f}")
             print(f"  Metrics: {routing_result.metrics}")
         
-        # Step 4: Create Complete Layout
+        # Phase 4: Construct Comprehensive Layout Representation
         layout = QECCLayout(
             node_positions=placement_result.node_positions,
             edge_routes=routing_result.edge_routes,
-            tiers=[set() for _ in range(len(routing_result.tiers))],  # Convert to sets
+            tiers=routing_result.tiers,  # Keep full RoutingTier objects
             metrics=routing_result.metrics,
             hardware_cost=hardware_cost
         )
-        
-        # Populate tier occupancy information
-        for tier_id, tier in enumerate(routing_result.tiers):
-            if tier_id < len(layout.tiers):
-                # Add occupied cells from routing
-                for x in range(tier.grid.shape[0]):
-                    for y in range(tier.grid.shape[1]):
-                        for layer in range(tier.grid.shape[2]):
-                            if tier.is_occupied(x, y, layer):
-                                layout.tiers[tier_id].add((x, y))
         
         total_time = time.time() - start_time
         if verbose:
@@ -160,7 +150,7 @@ class HAL:
                           custom_positions: Optional[List[Dict[int, Tuple[int, int]]]] = None,
                           verbose: bool = False) -> Dict[str, QECCLayout]:
         """
-        Layout multiple codes and compare results.
+        Execute batch processing of multiple QECC layouts with comparative analysis.
         
         Args:
             graphs: List of connectivity graphs
@@ -182,7 +172,7 @@ class HAL:
         for i, (graph, label, positions) in enumerate(zip(graphs, labels, custom_positions)):
             if verbose:
                 print(f"\n{'='*50}")
-                print(f"Processing {label} ({i+1}/{len(graphs)})")
+                print(f"Executing layout algorithm for {label} ({i+1}/{len(graphs)})")
                 print(f"{'='*50}")
             
             layout = self.layout_code(graph, positions, verbose)
@@ -203,7 +193,7 @@ class HAL:
     
     def analyze_layout(self, layout: QECCLayout, detailed: bool = False) -> Dict[str, any]:
         """
-        Analyze layout and provide detailed metrics.
+        Perform comprehensive layout quality assessment with detailed performance metrics.
         
         Args:
             layout: QECCLayout to analyze
@@ -306,7 +296,8 @@ class HAL:
         }
     
     def visualize_layout(self, layout: QECCLayout, show_tiers: bool = True, 
-                        interactive: bool = True, save_path: Optional[str] = None) -> None:
+                        interactive: bool = True, separate_tier_plots: bool = True,
+                        save_path: Optional[str] = None) -> None:
         """
         Visualize layout using built-in visualizer.
         
@@ -314,20 +305,21 @@ class HAL:
             layout: QECCLayout to visualize
             show_tiers: Whether to show multiple tiers
             interactive: Whether to create interactive plot
+            separate_tier_plots: Whether to create separate 2D plots for each tier (clearer than 3D)
             save_path: Optional path to save visualization
         """
-        self.visualizer.plot_layout(layout, show_tiers, interactive)
+        self.visualizer.plot_layout(layout, show_tiers, interactive, separate_tier_plots)
         
         if save_path:
             self.visualizer.save_layout(layout, save_path)
     
     def visualize_cost_analysis(self, layout: QECCLayout, show_breakdown: bool = True) -> None:
-        """Visualize cost analysis for layout."""
+        """Generate hardware cost analysis visualization using integrated plotting system."""
         self.visualizer.plot_cost_analysis(layout, show_breakdown)
     
     def compare_layouts(self, layouts: List[QECCLayout], labels: Optional[List[str]] = None) -> Dict[str, any]:
         """
-        Compare multiple layouts and visualize results.
+        Execute comparative analysis of multiple layouts with integrated visualization.
         
         Args:
             layouts: List of QECCLayout objects to compare

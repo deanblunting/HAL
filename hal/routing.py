@@ -292,21 +292,29 @@ class RoutingEngine:
         qubit_tier = self._create_tier(0, node_positions)
         tiers.append(qubit_tier)
         
-        # Paper approach: Try to route ALL edges on Tier 0 first, regardless of planarity
-        # Only move edges to higher tiers when they actually fail due to congestion
+        # Implement paper's Appendix A.2 specification: route only planar subgraph edges on Tier 0
+        # Non-planar edges are routed on higher tiers according to HAL algorithm
         
-        # Sort ALL edges by length - route shorter/easier edges first
         all_edges = list(graph.edges())
-        all_edges_by_length = sorted(all_edges, 
+        
+        # Partition edges into planar and non-planar sets based on planar subgraph extraction
+        planar_edges = [edge for edge in all_edges if edge in planar_subgraph_edges or 
+                       (edge[1], edge[0]) in planar_subgraph_edges]
+        non_planar_edges = [edge for edge in all_edges if edge not in planar_edges]
+        
+        # Sort planar edges by straight-line distance for optimal routing order
+        planar_edges_by_length = sorted(planar_edges, 
             key=lambda e: self._calculate_straight_line_distance(e, node_positions))
         
-        remaining_edges = set()
+        # Initialize non-planar edges for higher-tier routing
+        remaining_edges = set(non_planar_edges)
         tier_0_routed = 0
         
-        print(f"Attempting to route all {len(all_edges)} edges on Tier 0...")
+        print(f"Routing {len(planar_edges)} planar subgraph edges on Tier 0...")
+        print(f"{len(non_planar_edges)} non-planar edges reserved for higher-tier routing")
         
-        for edge in all_edges_by_length:
-            # Try to route this edge on Tier 0 using the same approach for all edges
+        # Route planar subgraph edges on qubit tier (Tier 0)
+        for edge in planar_edges_by_length:
             path = self._route_planar_edge_on_qubit_tier(edge, node_positions, qubit_tier)
             if path:
                 edge_routes[edge] = path
@@ -315,11 +323,11 @@ class RoutingEngine:
                 tier_usage[0] += 1
                 tier_0_routed += 1
             else:
-                # This edge failed on Tier 0 due to actual congestion - move to higher tier
+                # Planar edge routing failure requires higher-tier routing
                 remaining_edges.add(edge)
         
-        print(f"Tier 0 routing: {tier_0_routed}/{len(all_edges)} edges succeeded")
-        print(f"Remaining edges due to congestion: {len(remaining_edges)}")
+        print(f"Tier 0 completion: {tier_0_routed}/{len(planar_edges)} planar edges routed")
+        print(f"Higher-tier routing required for {len(remaining_edges)} edges")
         
         # Route remaining edges across multiple tiers exactly as described in the paper
         # Start with tier 1 for higher tier routing (tier 0 is qubit tier)

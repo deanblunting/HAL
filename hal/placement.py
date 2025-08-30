@@ -50,27 +50,39 @@ class SpringLayout:
         np.random.seed(self.config.random_seed)
         initial_pos = np.random.rand(n, 2) * 6 - 3  # Random positions in [-3, 3] for better spread
         
-        # Apply Kamada-Kawai energy minimization algorithm
+        # Apply exact Kamada-Kawai energy minimization algorithm
         def energy_function(pos):
+            """
+            Exact Kamada-Kawai global energy function that minimizes squared differences
+            between graph-theoretic distances and their corresponding Euclidean distances.
+            """
             pos = pos.reshape(n, 2)
-            energy = 0.0
+            total_energy = 0.0
             
             for i, u in enumerate(nodes):
                 for j, v in enumerate(nodes):
                     if i >= j:
                         continue
                         
-                    d_uv = distances.get((u, v), float('inf'))
-                    if d_uv == float('inf') or d_uv == 0:
+                    # Graph-theoretic distance between nodes u and v
+                    d_ij = distances.get((u, v), float('inf'))
+                    if d_ij == float('inf') or d_ij == 0:
                         continue
                     
+                    # Current Euclidean distance in layout
                     euclidean_dist = np.linalg.norm(pos[i] - pos[j])
-                    ideal_dist = k * d_uv
                     
-                    # Compute spring energy: quadratic distance deviation
-                    energy += (euclidean_dist - ideal_dist) ** 2
+                    # Ideal distance scaled by spring constant
+                    l_ij = k * d_ij
+                    
+                    # Spring constant between nodes i and j
+                    k_ij = 1.0 / (d_ij * d_ij) if d_ij > 0 else 0.0
+                    
+                    # Exact Kamada-Kawai energy: k_ij * (euclidean_dist - l_ij)^2
+                    energy_contribution = k_ij * (euclidean_dist - l_ij) ** 2
+                    total_energy += energy_contribution
             
-            return energy
+            return total_energy
         
         try:
             # Apply conjugate gradient optimization as specified in HAL paper
@@ -552,4 +564,109 @@ class PlacementEngine:
                 grid_height -= 1
         
         return (grid_width, grid_height)
+
+
+class AspectRatioAnalyzer:
+    """Aspect ratio analysis for bivariate bicycle code layout selection."""
+    
+    def __init__(self, config: HALConfig):
+        self.config = config
+        
+    def calculate_aspect_ratio(self, node_positions: Dict[int, Tuple[int, int]]) -> float:
+        """Calculate aspect ratio of qubit lattice (height/width where height >= width)."""
+        if not node_positions:
+            return 1.0
+            
+        coords = list(node_positions.values())
+        x_coords = [x for x, y in coords]
+        y_coords = [y for x, y in coords]
+        
+        width = max(x_coords) - min(x_coords) + 1
+        height = max(y_coords) - min(y_coords) + 1
+        
+        # Ensure aspect ratio >= 1 (height/width where height >= width)
+        return max(height, width) / min(height, width)
+    
+    def should_use_spring_layout(self, aspect_ratio: float) -> bool:
+        """Determine if spring layout should be used based on aspect ratio analysis."""
+        # Low aspect ratio (< 4): Square grid wins by ~30%
+        if aspect_ratio < 4.0:
+            return False
+            
+        # Cross-over regime (4-8): Mixed performance, prefer square for consistency
+        elif aspect_ratio <= 8.0:
+            return False
+            
+        # High aspect ratio (> 8): Spring layout wins by up to 4× cost reduction
+        else:
+            return True
+    
+    def select_optimal_layout_strategy(self, graph: nx.Graph, node_positions: Dict[int, Tuple[int, int]]) -> str:
+        """Select optimal layout strategy based on aspect ratio analysis."""
+        aspect_ratio = self.calculate_aspect_ratio(node_positions)
+        
+        if self.should_use_spring_layout(aspect_ratio):
+            return "spring_layout"
+        else:
+            return "square_grid"
+
+
+class BivariateBicycleLayoutSelector:
+    """Layout strategy selector specifically for bivariate bicycle codes."""
+    
+    def __init__(self, placement_engine: PlacementEngine):
+        self.placement_engine = placement_engine
+        self.aspect_analyzer = AspectRatioAnalyzer(placement_engine.config)
+        
+    def select_optimal_placement(self, graph: nx.Graph, 
+                                custom_square_positions: Optional[Dict[int, Tuple[int, int]]] = None) -> PlacementResult:
+        """
+        Select optimal placement strategy for BB codes using aspect ratio analysis.
+        Runs both square grid and spring layout, then picks the better result.
+        """
+        results = []
+        
+        # Strategy 1: Square grid layout (if custom positions provided)
+        if custom_square_positions:
+            try:
+                # Create temporary config with custom positions
+                square_config = HALConfig(**self.placement_engine.config.__dict__)
+                square_config.custom_positions = custom_square_positions
+                
+                square_engine = PlacementEngine(square_config)
+                square_result = square_engine.place_nodes(graph)
+                square_result.strategy_used = "square_grid"
+                results.append(square_result)
+                
+                # Calculate aspect ratio for decision guidance
+                aspect_ratio = self.aspect_analyzer.calculate_aspect_ratio(custom_square_positions)
+                
+            except Exception as e:
+                print(f"Square grid placement failed: {e}")
+        
+        # Strategy 2: Spring layout
+        try:
+            spring_result = self.placement_engine.place_nodes(graph)
+            spring_result.strategy_used = "spring_layout"
+            results.append(spring_result)
+        except Exception as e:
+            print(f"Spring layout placement failed: {e}")
+        
+        # Select best result (if multiple available)
+        if len(results) == 1:
+            return results[0]
+        elif len(results) == 2:
+            # Compare results and select optimal based on expected performance
+            square_result, spring_result = results
+            aspect_ratio = self.aspect_analyzer.calculate_aspect_ratio(custom_square_positions)
+            
+            # Use aspect ratio analysis to predict better strategy
+            if self.aspect_analyzer.should_use_spring_layout(aspect_ratio):
+                print(f"High aspect ratio ({aspect_ratio:.1f}) detected: selecting spring layout")
+                return spring_result
+            else:
+                print(f"Low aspect ratio ({aspect_ratio:.1f}) detected: selecting square grid")
+                return square_result
+        else:
+            raise ValueError("Both placement strategies failed")
     

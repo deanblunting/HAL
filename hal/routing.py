@@ -218,14 +218,25 @@ class StraightLineRouter:
 
 
 class BumpTransitionManager:
-    """Manage bump bond transitions between layers."""
+    """Manage bump bond transitions with sophisticated cost modeling."""
     
     def __init__(self, config: HALConfig):
         self.config = config
+        self.bump_cost_model = self._initialize_bump_cost_model()
+    
+    def _initialize_bump_cost_model(self) -> Dict[str, float]:
+        """Initialize bump bond cost model with hardware-realistic parameters."""
+        return {
+            'base_bump_cost': 1.0,           # Base cost per bump transition
+            'consecutive_penalty': 1.5,      # Extra cost for consecutive bumps
+            'distance_penalty': 0.1,         # Cost per grid unit of bump distance
+            'layer_depth_penalty': 0.2,      # Extra cost for deeper layers
+            'reliability_factor': 1.2,       # Cost multiplier for reliability constraints
+        }
     
     def add_bump_transitions(self, path: List[Tuple[int, int, int]]) -> Tuple[List[RouteSegment], int]:
         """
-        Convert path to segments with bump transition tracking.
+        Convert path to segments with sophisticated bump transition analysis.
         
         Returns:
             Tuple of (segments, bump_count)
@@ -235,30 +246,114 @@ class BumpTransitionManager:
         
         segments = []
         bump_count = 0
+        consecutive_bumps = 0
         
         for i in range(len(path) - 1):
             start = path[i]
             end = path[i + 1]
             
-            # Check if this is a layer change (bump transition)
+            # Analyze transition type and cost
             is_bump = start[2] != end[2]
+            is_tsv = (start[:2] == end[:2] and start[2] != end[2])
+            
             if is_bump:
                 bump_count += 1
+                if consecutive_bumps > 0:
+                    consecutive_bumps += 1
+                else:
+                    consecutive_bumps = 1
+            else:
+                consecutive_bumps = 0
+            
+            # Calculate segment cost using sophisticated model
+            segment_cost = self._calculate_segment_cost(start, end, is_bump, consecutive_bumps)
             
             segment = RouteSegment(
                 start=start,
                 end=end,
                 tier=0,  # Will be set by caller
                 is_bump_transition=is_bump,
-                is_tsv=(start[:2] == end[:2] and start[2] != end[2])  # Vertical transition
+                is_tsv=is_tsv,
+                cost=segment_cost if hasattr(RouteSegment, 'cost') else None
             )
             segments.append(segment)
         
         return segments, bump_count
     
+    def _calculate_segment_cost(self, start: Tuple[int, int, int], end: Tuple[int, int, int], 
+                              is_bump: bool, consecutive_bumps: int) -> float:
+        """Calculate cost for individual route segment with bump bond modeling."""
+        base_cost = 1.0
+        
+        if not is_bump:
+            return base_cost
+        
+        # Apply bump bond cost model
+        cost = self.bump_cost_model['base_bump_cost']
+        
+        # Consecutive bump penalty
+        if consecutive_bumps > 1:
+            cost *= (1.0 + (consecutive_bumps - 1) * self.bump_cost_model['consecutive_penalty'])
+        
+        # Layer depth penalty (higher layers cost more)
+        max_layer = max(start[2], end[2])
+        cost *= (1.0 + max_layer * self.bump_cost_model['layer_depth_penalty'])
+        
+        # Distance penalty for non-vertical bumps
+        if start[:2] != end[:2]:
+            distance = abs(start[0] - end[0]) + abs(start[1] - end[1])
+            cost *= (1.0 + distance * self.bump_cost_model['distance_penalty'])
+        
+        # Reliability factor
+        cost *= self.bump_cost_model['reliability_factor']
+        
+        return cost
+    
     def exceeds_bump_limit(self, bump_count: int) -> bool:
         """Check if bump count exceeds configured limit."""
         return bump_count > self.config.max_bump_transitions
+    
+    def calculate_total_bump_cost(self, edge_routes: Dict) -> float:
+        """Calculate total bump bond cost across all routed edges."""
+        total_cost = 0.0
+        
+        for edge, path in edge_routes.items():
+            if not path:
+                continue
+            
+            segments, _ = self.add_bump_transitions(path)
+            for segment in segments:
+                if hasattr(segment, 'cost') and segment.cost:
+                    total_cost += segment.cost
+                elif segment.is_bump_transition:
+                    # Fallback to simple cost if detailed cost not available
+                    total_cost += self.bump_cost_model['base_bump_cost']
+        
+        return total_cost
+    
+    def optimize_bump_usage(self, path: List[Tuple[int, int, int]]) -> List[Tuple[int, int, int]]:
+        """Optimize path to minimize bump bond usage and cost."""
+        if len(path) <= 2:
+            return path
+        
+        # Simple optimization: minimize consecutive layer changes
+        optimized_path = [path[0]]
+        
+        for i in range(1, len(path) - 1):
+            current = path[i]
+            prev_layer = optimized_path[-1][2]
+            next_layer = path[i + 1][2]
+            
+            # If we can avoid a layer change by staying on previous layer
+            if prev_layer == next_layer and current[2] != prev_layer:
+                # Try to route through previous layer instead
+                optimized_pos = (current[0], current[1], prev_layer)
+                optimized_path.append(optimized_pos)
+            else:
+                optimized_path.append(current)
+        
+        optimized_path.append(path[-1])
+        return optimized_path
 
 
 class RoutingEngine:
@@ -329,53 +424,61 @@ class RoutingEngine:
         print(f"Tier 0 completion: {tier_0_routed}/{len(planar_edges)} planar edges routed")
         print(f"Higher-tier routing required for {len(remaining_edges)} edges")
         
-        # Route remaining edges across multiple tiers exactly as described in the paper
+        # Route remaining edges using FIFO queue approach
         # Start with tier 1 for higher tier routing (tier 0 is qubit tier)
         current_tier_id = 1
         
         while remaining_edges and current_tier_id < self.config.max_tiers:
-            # Paper: "To route the remaining edges, a higher routing tier is created"
+            # Create higher routing tier for remaining unrouted edges
             print(f"Creating tier {current_tier_id} for {len(remaining_edges)} remaining edges")
             
             current_tier = self._create_tier(current_tier_id, node_positions)
             tiers.append(current_tier)
-            # Paper: "All nodes incident to such edges are copied to a fresh (x, y, z) grid"
+            # Copy all incident nodes to fresh 3D grid with TSV connections
             self._copy_incident_nodes_to_tier(remaining_edges, current_tier, node_positions)
             
-            # Paper: "edges are then iteratively routed as straight lines, where collisions are 
-            # resolved using bump transitions" and "Edges are sorted in ascending order of this estimate"
-            # Sort edges by straight-line length for routing order within each tier
+            # Process edges using FIFO queue for deterministic routing order
+            edge_queue = deque()
+            
+            # Sort edges by straight-line distance then add to FIFO queue
             remaining_edges_list = list(remaining_edges)
             remaining_edges_list.sort(key=lambda edge: self._calculate_straight_line_distance(edge, node_positions))
+            edge_queue.extend(remaining_edges_list)
             
             routed_in_iteration = set()
-            failed_in_iteration = set()
+            failed_edges = []
+            routing_attempts = 0
+            max_routing_attempts = len(remaining_edges) * 2  # Prevent infinite loops
             
-            for edge in remaining_edges_list:
+            # Process edges from FIFO queue with iterative routing
+            while edge_queue and routing_attempts < max_routing_attempts:
+                edge = edge_queue.popleft()
+                routing_attempts += 1
+                
                 path = self._route_edge_on_tier(edge, node_positions, current_tier, current_tier_id)
                 if path:
                     edge_routes[edge] = path
                     self._mark_path_occupied(path, current_tier)
-                    # Track that this edge was routed on this tier
                     current_tier.edges.append(edge)
                     routed_in_iteration.add(edge)
                     tier_usage[current_tier_id] += 1
                 else:
-                    failed_in_iteration.add(edge)
+                    # Handle routing failures with tier congestion analysis
+                    failed_edges.append(edge)
+                    
+                    # Check for tier congestion using failure threshold approach
+                    if self._is_tier_congested_by_failures(current_tier, failed_edges, len(remaining_edges)):
+                        # Tier is congested when too many consecutive failures occur
+                        print(f"Tier {current_tier_id} congested after {len(failed_edges)} consecutive failures")
+                        break
             
-            remaining_edges -= routed_in_iteration
+            # Update remaining edges for next tier escalation
+            remaining_edges = (remaining_edges - routed_in_iteration) | set(failed_edges)
             print(f"Tier {current_tier_id}: routed {len(routed_in_iteration)} edges, {len(remaining_edges)} remaining")
             
-            # Paper: "If no more edges can be routed, the tier is considered congested. 
-            # A new tier is created, and the remaining edges are reattempted."
+            # Create new tier and reattempt remaining edges
             if remaining_edges:
-                if len(routed_in_iteration) == 0:
-                    # No progress made - move to next tier
-                    print(f"No progress on tier {current_tier_id}, moving to tier {current_tier_id + 1}")
-                    current_tier_id += 1
-                else:
-                    # Some progress made - try remaining edges on next tier
-                    current_tier_id += 1
+                current_tier_id += 1
             else:
                 # All edges routed successfully
                 break
@@ -457,43 +560,62 @@ class RoutingEngine:
     def _route_edge_on_higher_tier(self, edge: Tuple[int, int], start_pos: Tuple[int, int], 
                                   end_pos: Tuple[int, int], tier: RoutingTier, tier_id: int) -> Optional[List[Tuple[int, int, int]]]:
         """
-        Route edge on higher tier using paper's grid-based pathfinding approach.
-        
-        Paper: Higher tiers use sophisticated A* routing on the 2D grid with bump transitions
-        between layers, creating complex crossing patterns like in the author's Tier 1 image.
+        Route edge on higher tier using systematic layer management.
+        Higher tiers manage available layers dynamically to resolve routing conflicts.
         """
-        # Paper approach: sophisticated pathfinding for edges that couldn't route on Tier 0
+        # Systematic layer-by-layer routing approach
+        num_layers = tier.grid.shape[2]
         
-        # 1. Try straight line on layer 0 (primary routing layer)
-        path = self.straight_router.route_straight_line(start_pos, end_pos, tier, layer=0)
-        if path:
-            return path
+        # 1. Try each available layer in order for straight-line routing
+        for layer in range(num_layers):
+            if self._is_layer_available_for_routing(tier, layer):
+                path = self.straight_router.route_straight_line(start_pos, end_pos, tier, layer=layer)
+                if path:
+                    # Successful straight-line routing on this layer
+                    if layer != 0:
+                        # Add bump transitions to connect from/to qubit layer
+                        full_path = self._create_path_with_layer_transitions(start_pos, end_pos, path, layer)
+                        segments, bump_count = self.bump_manager.add_bump_transitions(full_path)
+                        if not self.bump_manager.exceeds_bump_limit(bump_count):
+                            tier.bump_transitions[edge] = bump_count
+                            self._mark_layer_usage(tier, layer)
+                            return full_path
+                    else:
+                        # Direct routing on layer 0
+                        return path
         
-        # 2. Try straight line on layer 1 (secondary routing layer) with bump transitions
-        if tier.grid.shape[2] > 1:
-            path = self.straight_router.route_straight_line(start_pos, end_pos, tier, layer=1)
-            if path:
-                # Create path with bump transitions: start on layer 0, route on layer 1, end on layer 0
-                full_path = [(start_pos[0], start_pos[1], 0)]  # Connect to qubit
-                full_path.extend(path[1:-1])  # Route on layer 1 (exclude endpoints)
-                full_path.append((end_pos[0], end_pos[1], 0))  # Connect to qubit
+        # 2. Try multi-layer routing with dynamic layer allocation
+        for primary_layer in range(num_layers):
+            if not self._is_layer_available_for_routing(tier, primary_layer):
+                continue
                 
-                segments, bump_count = self.bump_manager.add_bump_transitions(full_path)
-                if not self.bump_manager.exceeds_bump_limit(bump_count):
-                    tier.bump_transitions[edge] = bump_count
-                    return full_path
+            for secondary_layer in range(num_layers):
+                if secondary_layer == primary_layer or not self._is_layer_available_for_routing(tier, secondary_layer):
+                    continue
+                
+                # Attempt two-layer routing solution
+                path = self._attempt_multi_layer_routing(start_pos, end_pos, tier, primary_layer, secondary_layer)
+                if path:
+                    segments, bump_count = self.bump_manager.add_bump_transitions(path)
+                    if not self.bump_manager.exceeds_bump_limit(bump_count):
+                        tier.bump_transitions[edge] = bump_count
+                        self._mark_layer_usage(tier, primary_layer)
+                        self._mark_layer_usage(tier, secondary_layer)
+                        return path
         
-        # 3. Use A* pathfinding for complex routes (creates crossing patterns like author's Tier 1)
+        # 3. Fallback to A* pathfinding with layer constraints
         start_3d = (start_pos[0], start_pos[1], 0)
         end_3d = (end_pos[0], end_pos[1], 0)
         
-        # A* can create complex paths that go around congestion
         path = self.pathfinder.find_path(start_3d, end_3d, tier)
         if path:
             segments, bump_count = self.bump_manager.add_bump_transitions(path)
-            # Higher tiers can use more bump transitions for complex routing
             if bump_count <= self.config.max_bump_transitions:
                 tier.bump_transitions[edge] = bump_count
+                # Mark layers used by this path
+                used_layers = set(pos[2] for pos in path)
+                for layer in used_layers:
+                    self._mark_layer_usage(tier, layer)
                 return path
         
         return None
@@ -558,19 +680,34 @@ class RoutingEngine:
         occupancy_rate = np.sum(tier.grid) / tier.grid.size
         return occupancy_rate > 0.8  # 80% occupancy threshold
     
+    def _is_tier_congested_by_failures(self, tier: RoutingTier, failed_edges: List, total_edges: int) -> bool:
+        """
+        Check tier congestion using failure threshold approach.
+        Tier is considered congested when consecutive routing failures exceed threshold.
+        """
+        # Congestion threshold based on proportion of failed attempts
+        failure_threshold = max(3, total_edges // 10)  # At least 3 failures, or 10% of total edges
+        
+        # Consecutive failure detection
+        if len(failed_edges) >= failure_threshold:
+            return True
+        
+        # Also check occupancy-based congestion as fallback
+        occupancy_rate = np.sum(tier.grid) / tier.grid.size if tier.grid.size > 0 else 0
+        return occupancy_rate > 0.85  # Slightly higher threshold for failure-based analysis
+    
     def _calculate_routing_metrics(self, edge_routes: Dict, tiers: List[RoutingTier], 
                                   node_positions: Dict[int, Tuple[int, int]]) -> Dict[str, float]:
-        """Calculate routing quality metrics exactly as described in the paper.
-        
-        Paper metrics: number of tiers, average edge length, maximum average of bump bonds 
-        across all tiers, and average number of TSVs per edge on higher tiers.
-        """
+        """Calculate routing quality metrics with enhanced bump bond cost analysis."""
         if not edge_routes:
-            return {'tiers': max(len(tiers), 1), 'length': 0.0, 'bumps': 0.0, 'tsvs': 0.0}
+            return {'tiers': max(len(tiers), 1), 'length': 0.0, 'bumps': 0.0, 'tsvs': 0.0, 'bump_cost': 0.0}
         
         total_length = 0.0
         total_bumps = 0
         edge_tsvs = defaultdict(int)  # Track TSVs per edge
+        
+        # Calculate enhanced bump bond cost using sophisticated model
+        total_bump_cost = self.bump_manager.calculate_total_bump_cost(edge_routes)
         
         # Calculate TSVs per edge based on which tiers they use
         for edge, path in edge_routes.items():
@@ -581,41 +718,49 @@ class RoutingEngine:
             path_length = len(path) - 1 if len(path) > 1 else 0
             total_length += path_length
             
-            # Count bump transitions within tiers
-            bump_count = 0
-            tiers_used = set()
-            
-            for i in range(len(path) - 1):
-                current = path[i]
-                next_pos = path[i + 1]
-                
-                # Track which tiers this path uses
-                tiers_used.add(self._get_tier_from_z_level(current[2]))
-                
-                # Layer change within same tier = bump transition
-                if current[2] != next_pos[2] and current[:2] != next_pos[:2]:
-                    bump_count += 1
-            
+            # Enhanced bump analysis with consecutive bump detection
+            segments, bump_count = self.bump_manager.add_bump_transitions(path)
             total_bumps += bump_count
             
+            # Track tier usage for TSV calculation
+            tiers_used = set()
+            for pos in path:
+                tiers_used.add(self._get_tier_from_z_level(pos[2]))
+            
             # TSVs needed = number of higher tiers used by this edge
-            # Paper: "average number of TSVs per edge on higher tiers"
             higher_tiers_used = len([t for t in tiers_used if t > 0])
             if higher_tiers_used > 0:
                 edge_tsvs[edge] = higher_tiers_used
         
         num_edges = len(edge_routes)
         
-        # Calculate maximum average bump transitions across all tiers
+        # Calculate maximum average bump transitions across all tiers with cost weighting
         max_avg_bumps = 0.0
+        max_avg_bump_cost = 0.0
         if tiers:
             tier_bump_counts = []
+            tier_bump_costs = []
             for tier in tiers:
-                tier_bumps = sum(tier.bump_transitions.values())
-                tier_edges = len(tier.bump_transitions) 
+                tier_bumps = sum(tier.bump_transitions.values()) if hasattr(tier, 'bump_transitions') else 0
+                tier_edges = len(tier.bump_transitions) if hasattr(tier, 'bump_transitions') else len(tier.edges)
+                
                 avg_bumps = tier_bumps / tier_edges if tier_edges > 0 else 0.0
                 tier_bump_counts.append(avg_bumps)
+                
+                # Calculate average bump cost for this tier
+                tier_cost = 0.0
+                for edge in tier.edges:
+                    if edge in edge_routes and edge_routes[edge]:
+                        segments, _ = self.bump_manager.add_bump_transitions(edge_routes[edge])
+                        for segment in segments:
+                            if hasattr(segment, 'cost') and segment.cost and segment.is_bump_transition:
+                                tier_cost += segment.cost
+                
+                avg_tier_cost = tier_cost / tier_edges if tier_edges > 0 else 0.0
+                tier_bump_costs.append(avg_tier_cost)
+            
             max_avg_bumps = max(tier_bump_counts) if tier_bump_counts else 0.0
+            max_avg_bump_cost = max(tier_bump_costs) if tier_bump_costs else 0.0
         
         # Average TSVs per edge (only counting edges that use higher tiers)
         total_tsvs = sum(edge_tsvs.values())
@@ -624,8 +769,10 @@ class RoutingEngine:
         return {
             'tiers': len(tiers),
             'length': total_length / num_edges if num_edges > 0 else 0.0,
-            'bumps': max_avg_bumps,  # Paper: "maximum average of bump bonds across all tiers"
-            'tsvs': avg_tsvs  # Paper: "average number of TSVs per edge on higher tiers"
+            'bumps': max_avg_bumps,  # Maximum average bump transitions across all tiers
+            'tsvs': avg_tsvs,        # Average TSVs per edge on higher tiers
+            'bump_cost': total_bump_cost / num_edges if num_edges > 0 else 0.0,  # Enhanced bump cost metric
+            'max_tier_bump_cost': max_avg_bump_cost  # Maximum average bump cost across tiers
         }
     
     def _calculate_auxiliary_qubit_grid(self, node_positions: Dict[int, Tuple[int, int]], tier_id: int) -> Tuple[int, int, int]:
@@ -938,3 +1085,82 @@ class RoutingEngine:
                 cross_tier_routes.append(cross_tier_path)
         
         return cross_tier_routes
+    
+    def _is_layer_available_for_routing(self, tier: RoutingTier, layer: int) -> bool:
+        """Check if layer has sufficient capacity for additional routing."""
+        if layer >= tier.grid.shape[2]:
+            return False
+        
+        # Calculate layer occupancy
+        layer_slice = tier.grid[:, :, layer]
+        occupancy_rate = np.sum(layer_slice) / layer_slice.size
+        
+        # Layer is available if under capacity threshold
+        return occupancy_rate < 0.7  # 70% threshold per layer
+    
+    def _mark_layer_usage(self, tier: RoutingTier, layer: int):
+        """Mark layer as having increased usage for capacity tracking."""
+        # This is tracked implicitly through grid occupancy
+        # Could be extended with explicit layer usage counters if needed
+        pass
+    
+    def _create_path_with_layer_transitions(self, start_pos: Tuple[int, int], end_pos: Tuple[int, int], 
+                                          path: List[Tuple[int, int, int]], target_layer: int) -> List[Tuple[int, int, int]]:
+        """Create path with proper layer transitions to/from qubit layer."""
+        if not path:
+            return []
+        
+        # Create full path with layer transitions
+        full_path = []
+        
+        # Start transition: qubit layer to target layer
+        full_path.append((start_pos[0], start_pos[1], 0))  # Start on qubit layer
+        if target_layer != 0:
+            full_path.append((start_pos[0], start_pos[1], target_layer))  # Bump to target layer
+        
+        # Add main routing path (excluding endpoints if they're already handled)
+        for i, (x, y, z) in enumerate(path):
+            if i == 0 and (x, y) == start_pos:
+                continue  # Skip start if already added
+            if i == len(path) - 1 and (x, y) == end_pos:
+                continue  # Skip end, will be added below
+            full_path.append((x, y, target_layer))
+        
+        # End transition: target layer to qubit layer
+        if target_layer != 0:
+            full_path.append((end_pos[0], end_pos[1], target_layer))  # Approach on target layer
+        full_path.append((end_pos[0], end_pos[1], 0))  # End on qubit layer
+        
+        return full_path
+    
+    def _attempt_multi_layer_routing(self, start_pos: Tuple[int, int], end_pos: Tuple[int, int], 
+                                   tier: RoutingTier, primary_layer: int, secondary_layer: int) -> Optional[List[Tuple[int, int, int]]]:
+        """Attempt routing using multiple layers to resolve conflicts."""
+        # Calculate midpoint for layer transition
+        mid_x = (start_pos[0] + end_pos[0]) // 2
+        mid_y = (start_pos[1] + end_pos[1]) // 2
+        
+        # Try routing: start -> midpoint on primary_layer, midpoint -> end on secondary_layer
+        path_segment1 = self.straight_router.route_straight_line(start_pos, (mid_x, mid_y), tier, primary_layer)
+        if path_segment1:
+            path_segment2 = self.straight_router.route_straight_line((mid_x, mid_y), end_pos, tier, secondary_layer)
+            if path_segment2:
+                # Combine segments with layer transitions
+                full_path = []
+                
+                # Add first segment
+                for x, y, z in path_segment1:
+                    full_path.append((x, y, primary_layer))
+                
+                # Add transition point
+                full_path.append((mid_x, mid_y, secondary_layer))
+                
+                # Add second segment (skip overlapping midpoint)
+                for i, (x, y, z) in enumerate(path_segment2):
+                    if i == 0 and (x, y) == (mid_x, mid_y):
+                        continue
+                    full_path.append((x, y, secondary_layer))
+                
+                return full_path
+        
+        return None

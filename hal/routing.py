@@ -273,8 +273,7 @@ class BumpTransitionManager:
                 end=end,
                 tier=0,  # Will be set by caller
                 is_bump_transition=is_bump,
-                is_tsv=is_tsv,
-                cost=segment_cost if hasattr(RouteSegment, 'cost') else None
+                is_tsv=is_tsv
             )
             segments.append(segment)
         
@@ -323,11 +322,12 @@ class BumpTransitionManager:
             
             segments, _ = self.add_bump_transitions(path)
             for segment in segments:
-                if hasattr(segment, 'cost') and segment.cost:
-                    total_cost += segment.cost
-                elif segment.is_bump_transition:
-                    # Fallback to simple cost if detailed cost not available
-                    total_cost += self.bump_cost_model['base_bump_cost']
+                if segment.is_bump_transition:
+                    # Calculate cost using sophisticated model since RouteSegment doesn't store cost
+                    segment_cost = self._calculate_segment_cost(
+                        segment.start, segment.end, True, 1  # consecutive_bumps=1 for individual calculation
+                    )
+                    total_cost += segment_cost
         
         return total_cost
     
@@ -741,8 +741,8 @@ class RoutingEngine:
             tier_bump_counts = []
             tier_bump_costs = []
             for tier in tiers:
-                tier_bumps = sum(tier.bump_transitions.values()) if hasattr(tier, 'bump_transitions') else 0
-                tier_edges = len(tier.bump_transitions) if hasattr(tier, 'bump_transitions') else len(tier.edges)
+                tier_bumps = sum(tier.bump_transitions.values())
+                tier_edges = len(tier.bump_transitions) if tier.bump_transitions else len(tier.edges)
                 
                 avg_bumps = tier_bumps / tier_edges if tier_edges > 0 else 0.0
                 tier_bump_counts.append(avg_bumps)
@@ -753,8 +753,12 @@ class RoutingEngine:
                     if edge in edge_routes and edge_routes[edge]:
                         segments, _ = self.bump_manager.add_bump_transitions(edge_routes[edge])
                         for segment in segments:
-                            if hasattr(segment, 'cost') and segment.cost and segment.is_bump_transition:
-                                tier_cost += segment.cost
+                            if segment.is_bump_transition:
+                                # Calculate cost since RouteSegment doesn't store individual costs
+                                segment_cost = self.bump_manager._calculate_segment_cost(
+                                    segment.start, segment.end, True, 1
+                                )
+                                tier_cost += segment_cost
                 
                 avg_tier_cost = tier_cost / tier_edges if tier_edges > 0 else 0.0
                 tier_bump_costs.append(avg_tier_cost)
@@ -796,7 +800,7 @@ class RoutingEngine:
         
         # Method 1: Hardware Efficiency Target (paper's approach)
         # Author achieved 50% efficiency (30 logical / 60 total = 50%)
-        target_efficiency = self.config.hardware_efficiency_target if hasattr(self.config, 'hardware_efficiency_target') else 0.5
+        target_efficiency = getattr(self.config, 'hardware_efficiency_target', 0.5)
         
         # Calculate total positions needed for target efficiency
         total_positions_needed = int(n_logical_qubits / target_efficiency)

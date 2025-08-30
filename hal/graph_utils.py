@@ -109,7 +109,7 @@ class CommunityDetector:
             return {}
         
         # Prioritize NetworkX Louvain implementation for optimal performance
-        if HAS_LOUVAIN and self.config and hasattr(self.config, 'use_louvain_communities') and self.config.use_louvain_communities:
+        if HAS_LOUVAIN and self.config and getattr(self.config, 'use_louvain_communities', True):
             try:
                 # Apply NetworkX Louvain community detection algorithm
                 community_sets = nx_community.louvain_communities(

@@ -545,7 +545,7 @@ class PlacementEngine:
             return (10, 10)
         
         # Paper's approach: 50% efficiency target
-        target_efficiency = self.config.hardware_efficiency_target if hasattr(self.config, 'hardware_efficiency_target') else 0.5
+        target_efficiency = getattr(self.config, 'hardware_efficiency_target', 0.5)
         target_total_positions = int(n_logical_qubits / target_efficiency)
         
         # Calculate dimensions for rectangular grid (like paper's 10×6)

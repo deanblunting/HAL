@@ -73,13 +73,15 @@ class SpringLayout:
             return energy
         
         try:
-            # Apply gradient descent optimization (SciPy-independent implementation)
-            optimized_pos = self._gradient_descent_optimization(
+            # Apply conjugate gradient optimization as specified in HAL paper
+            optimized_pos = self._conjugate_gradient_optimization(
                 energy_function, initial_pos, n, self.config.spring_layout_iterations
             )
         except:
-            # Revert to initial configuration on optimization failure
-            optimized_pos = initial_pos
+            # Graceful fallback to gradient descent on optimization failure
+            optimized_pos = self._gradient_descent_optimization(
+                energy_function, initial_pos, n, self.config.spring_layout_iterations
+            )
         
         # Transform array results to node position dictionary
         positions = {}
@@ -88,8 +90,91 @@ class SpringLayout:
         
         return positions
     
+    def _conjugate_gradient_optimization(self, energy_function, initial_pos, n, max_iterations):
+        """Conjugate gradient optimization for Kamada-Kawai energy minimization.
+        
+        Implements conjugate gradient method as referenced in HAL paper for
+        minimizing spring layout energy function.
+        """
+        pos = initial_pos.copy().flatten()
+        
+        def compute_gradient(x):
+            """Compute gradient using finite differences."""
+            grad = np.zeros_like(x)
+            epsilon = 1e-6
+            base_energy = energy_function(x)
+            
+            for i in range(len(x)):
+                x_plus = x.copy()
+                x_plus[i] += epsilon
+                grad[i] = (energy_function(x_plus) - base_energy) / epsilon
+                
+            return grad
+        
+        # Initialize conjugate gradient variables
+        gradient = compute_gradient(pos)
+        search_direction = -gradient.copy()
+        
+        for iteration in range(max_iterations):
+            # Line search to find optimal step size
+            step_size = self._line_search(energy_function, pos, search_direction)
+            
+            if step_size == 0:
+                break
+                
+            # Update position
+            new_pos = pos + step_size * search_direction
+            new_gradient = compute_gradient(new_pos)
+            
+            # Check convergence
+            if np.linalg.norm(new_gradient) < 1e-4:
+                pos = new_pos
+                break
+            
+            # Compute conjugate coefficient using Polak-Ribiere formula
+            beta = max(0, np.dot(new_gradient, new_gradient - gradient) / np.dot(gradient, gradient))
+            
+            # Update search direction
+            search_direction = -new_gradient + beta * search_direction
+            
+            # Update variables for next iteration
+            pos = new_pos
+            gradient = new_gradient
+        
+        return pos.reshape(n, 2)
+    
+    def _line_search(self, energy_function, pos, direction, alpha_max=1.0, c1=1e-4, max_iter=20):
+        """Simple backtracking line search for conjugate gradient method."""
+        alpha = alpha_max
+        base_energy = energy_function(pos)
+        gradient_direction_dot = np.dot(self._compute_simple_gradient(energy_function, pos), direction)
+        
+        for _ in range(max_iter):
+            new_energy = energy_function(pos + alpha * direction)
+            
+            # Armijo condition for sufficient decrease
+            if new_energy <= base_energy + c1 * alpha * gradient_direction_dot:
+                return alpha
+            
+            alpha *= 0.5
+        
+        return 0.0
+    
+    def _compute_simple_gradient(self, energy_function, pos):
+        """Simple gradient computation for line search."""
+        grad = np.zeros_like(pos)
+        epsilon = 1e-6
+        base_energy = energy_function(pos)
+        
+        for i in range(len(pos)):
+            pos_plus = pos.copy()
+            pos_plus[i] += epsilon
+            grad[i] = (energy_function(pos_plus) - base_energy) / epsilon
+            
+        return grad
+    
     def _gradient_descent_optimization(self, energy_function, initial_pos, n, max_iterations):
-        """Simple gradient descent optimization to replace SciPy dependency."""
+        """Gradient descent fallback optimization method."""
         pos = initial_pos.copy()
         learning_rate = 0.01
         epsilon = 1e-6
@@ -101,21 +186,20 @@ class SpringLayout:
             
             for i in range(pos.shape[0]):
                 for j in range(pos.shape[1]):
-                    # Apply forward difference approximation
                     pos_plus = pos.copy()
                     pos_plus[i, j] += epsilon
                     energy_plus = energy_function(pos_plus.flatten())
                     
                     gradient[i, j] = (energy_plus - current_energy) / epsilon
             
-            # Execute gradient descent position update
+            # Update position with gradient descent
             pos -= learning_rate * gradient
             
-            # Apply adaptive learning rate decay
+            # Adaptive learning rate adjustment
             if iteration % 10 == 0:
-                learning_rate *= 0.95  # Apply exponential decay
+                learning_rate *= 0.95
             
-            # Implement early termination based on gradient magnitude
+            # Early termination on convergence
             if np.linalg.norm(gradient) < 1e-4:
                 break
         
@@ -130,35 +214,39 @@ class GridRasterizer:
         
     def rasterize_positions(self, positions: Dict[int, Tuple[float, float]], 
                            auxiliary_grid_size: Optional[Tuple[int, int]] = None) -> Dict[int, Tuple[int, int]]:
-        """Convert floating-point positions to integer grid coordinates."""
+        """Convert continuous positions to integer grid coordinates using two-phase rasterization.
+        
+        Implements the exact algorithm from HAL paper Section A.1.b:
+        Phase 1: Naive rounding with immediate acceptance
+        Phase 2: Priority conflict resolution using min-heap with Euclidean distance keys
+        """
         if not positions:
             return {}
         
-        # Select grid dimensions: auxiliary grid or default configuration
+        # Determine target grid dimensions
         if auxiliary_grid_size:
             grid_width, grid_height = auxiliary_grid_size
         else:
             grid_width, grid_height = self.config.grid_size
         
-        # Apply position normalization to auxiliary grid bounds
+        # Normalize positions to grid coordinate system
         pos_array = np.array(list(positions.values()))
         min_pos = np.min(pos_array, axis=0)
         max_pos = np.max(pos_array, axis=0)
         
-        # Optimize auxiliary grid utilization with reduced margins
-        margin = 1  # Smaller margin for better distribution
+        # Calculate scaling parameters with margin for grid utilization
+        margin = 1
         available_size = (
             grid_width - 2 * margin,
             grid_height - 2 * margin
         )
         
         range_pos = max_pos - min_pos
-        # Avoid division by zero
-        range_pos[range_pos == 0] = 1.0
+        range_pos[range_pos == 0] = 1.0  # Prevent division by zero
         
         scale = min(available_size[0] / range_pos[0], available_size[1] / range_pos[1])
         
-        # Phase 1: Naive rounding
+        # Phase 1: Naive rounding and immediate acceptance
         grid_positions = {}
         occupied = set()
         conflicts = []
@@ -166,44 +254,129 @@ class GridRasterizer:
         nodes = list(positions.keys())
         for node in nodes:
             x, y = positions[node]
-            # Normalize and scale
+            
+            # Transform to grid coordinates
             x_norm = (x - min_pos[0]) * scale + margin
             y_norm = (y - min_pos[1]) * scale + margin
             
-            # Round to integer
-            grid_x = int(round(x_norm))
-            grid_y = int(round(y_norm))
+            # Map to nearest lattice point
+            grid_x = int(np.floor(x_norm + 0.5))
+            grid_y = int(np.floor(y_norm + 0.5))
             
-            # Clamp to auxiliary grid bounds
+            # Enforce grid boundaries
             grid_x = max(0, min(grid_width - 1, grid_x))
             grid_y = max(0, min(grid_height - 1, grid_y))
             
+            # Accept placement if site is available
             if (grid_x, grid_y) not in occupied:
                 grid_positions[node] = (grid_x, grid_y)
                 occupied.add((grid_x, grid_y))
             else:
-                conflicts.append((node, positions[node], (grid_x, grid_y)))
+                # Queue node for conflict resolution in Phase 2
+                conflicts.append({
+                    'node': node,
+                    'original_pos': positions[node],
+                    'preferred_grid_pos': (grid_x, grid_y)
+                })
         
-        # Phase 2: Resolve conflicts using priority queue
+        # Phase 2: Priority conflict resolution
         if conflicts:
-            grid_positions.update(self._resolve_conflicts(conflicts, occupied))
+            grid_positions.update(self._resolve_conflicts_with_heap(conflicts, occupied, grid_width, grid_height))
         
         return grid_positions
     
-    def _resolve_conflicts(self, conflicts: List, occupied: Set[Tuple[int, int]]) -> Dict[int, Tuple[int, int]]:
-        """Resolve placement conflicts using nearest available position."""
+    def _resolve_conflicts_with_heap(self, conflicts: List[Dict], occupied: Set[Tuple[int, int]], 
+                                    grid_width: int, grid_height: int) -> Dict[int, Tuple[int, int]]:
+        """Phase 2 priority conflict resolution using min-heap algorithm.
+        
+        Implements exact algorithm from HAL paper: nodes enter min-heap keyed by
+        Euclidean distance to nearest free site, processed greedily with distance
+        key updates as sites become occupied.
+        """
         resolved = {}
         
-        for node, original_pos, target_grid in conflicts:
-            best_pos = self._find_nearest_free_position(target_grid, occupied)
-            if best_pos:
-                resolved[node] = best_pos
-                occupied.add(best_pos)
+        if not conflicts:
+            return resolved
+        
+        # Initialize min-heap with distance-keyed conflicts
+        heap = []
+        
+        for conflict in conflicts:
+            node = conflict['node']
+            preferred_pos = conflict['preferred_grid_pos']
+            
+            # Find nearest available site and compute distance
+            nearest_free_site, distance = self._find_nearest_free_site_with_distance(
+                preferred_pos, occupied, grid_width, grid_height
+            )
+            
+            if nearest_free_site is not None:
+                heapq.heappush(heap, (distance, node, nearest_free_site))
+        
+        # Process heap greedily: closest nodes get priority
+        while heap:
+            distance, node, nearest_site = heapq.heappop(heap)
+            
+            # Verify site availability (may have been claimed)
+            if nearest_site not in occupied:
+                resolved[node] = nearest_site
+                occupied.add(nearest_site)
+                
+                # Update remaining heap elements with new distances
+                self._update_heap_distances(heap, occupied, grid_width, grid_height)
             else:
-                # Fallback: place at original target (allowing overlap)
-                resolved[node] = target_grid
+                # Find alternative site for displaced node
+                new_nearest_site, new_distance = self._find_nearest_free_site_with_distance(
+                    nearest_site, occupied, grid_width, grid_height
+                )
+                
+                if new_nearest_site is not None:
+                    heapq.heappush(heap, (new_distance, node, new_nearest_site))
         
         return resolved
+    
+    def _find_nearest_free_site_with_distance(self, target: Tuple[int, int], occupied: Set[Tuple[int, int]], 
+                                             grid_width: int, grid_height: int) -> Tuple[Optional[Tuple[int, int]], float]:
+        """Find nearest free lattice site using expanding square shells method."""
+        target_x, target_y = target
+        
+        # Expand search radius using square shells
+        for radius in range(max(grid_width, grid_height)):
+            # Check positions on shell perimeter
+            for dx in range(-radius, radius + 1):
+                for dy in range(-radius, radius + 1):
+                    # Only examine shell boundary positions
+                    if abs(dx) != radius and abs(dy) != radius:
+                        continue
+                    
+                    x, y = target_x + dx, target_y + dy
+                    
+                    # Validate grid boundaries and availability
+                    if 0 <= x < grid_width and 0 <= y < grid_height:
+                        if (x, y) not in occupied:
+                            distance = np.sqrt(dx*dx + dy*dy)
+                            return (x, y), distance
+        
+        return None, float('inf')
+    
+    def _update_heap_distances(self, heap: List, occupied: Set[Tuple[int, int]], 
+                              grid_width: int, grid_height: int):
+        """Update distance keys for remaining heap elements in-place."""
+        updated_heap = []
+        
+        for distance, node, old_site in heap:
+            # Recompute nearest free site and distance
+            new_nearest_site, new_distance = self._find_nearest_free_site_with_distance(
+                old_site, occupied, grid_width, grid_height
+            )
+            
+            if new_nearest_site is not None:
+                updated_heap.append((new_distance, node, new_nearest_site))
+        
+        # Rebuild heap with updated distances
+        heap.clear()
+        for item in updated_heap:
+            heapq.heappush(heap, item)
     
     def _find_nearest_free_position(self, target: Tuple[int, int], occupied: Set[Tuple[int, int]]) -> Optional[Tuple[int, int]]:
         """Find nearest free position to target using BFS."""
@@ -233,18 +406,40 @@ class GridRasterizer:
         return None
     
     def compact_grid(self, positions: Dict[int, Tuple[int, int]]) -> Dict[int, Tuple[int, int]]:
-        """Compact grid by removing empty rows and columns."""
+        """Compact grid using monotone coordinate remapping as specified in HAL paper.
+        
+        Paper (Section A.1.c): "The set of distinct x-coordinates is sorted, and the 
+        i-th element is mapped to i; the same is done for the y-coordinates. The monotone 
+        remap preserves the embedding planarity and relative edge lengths measured in grid units."
+        """
         if not positions:
             return positions
         
+        # Extract and sort distinct coordinates
         coords = list(positions.values())
-        min_x = min(x for x, y in coords)
-        min_y = min(y for x, y in coords)
+        x_coords = sorted(set(x for x, y in coords))
+        y_coords = sorted(set(y for x, y in coords))
         
-        # Shift all positions to start from (0, 0)
+        # Create monotone coordinate mappings
+        x_mapping = {old_x: new_x for new_x, old_x in enumerate(x_coords)}
+        y_mapping = {old_y: new_y for new_y, old_y in enumerate(y_coords)}
+        
+        # Apply monotone remapping to preserve planarity
         compacted = {}
         for node, (x, y) in positions.items():
-            compacted[node] = (x - min_x, y - min_y)
+            compacted[node] = (x_mapping[x], y_mapping[y])
+        
+        # Translate to positive quadrant (final paper step)
+        if compacted:
+            min_x = min(x for x, y in compacted.values())
+            min_y = min(y for x, y in compacted.values())
+            
+            # Ensure all coordinates are non-negative
+            if min_x < 0 or min_y < 0:
+                translated = {}
+                for node, (x, y) in compacted.items():
+                    translated[node] = (x - min_x, y - min_y)
+                compacted = translated
         
         return compacted
 
@@ -303,22 +498,29 @@ class PlacementEngine:
         community_detector = CommunityDetector(graph, self.config)
         communities = community_detector.detect_communities()
         
-        # Step 2: Extract planar subgraph
+        # Step 2: Initial spring layout for position-dependent edge prioritization
+        self.spring_layout = SpringLayout(graph, self.config)
+        # Use empty planar subgraph initially to get rough positions
+        initial_positions = self.spring_layout.compute_layout(set())
+        
+        # Step 3: Extract planar subgraph using position-dependent edge priorities
         analyzer = GraphAnalyzer(graph)
-        edge_priorities = analyzer.get_edge_priorities(communities)
+        edge_priorities = analyzer.get_edge_priorities(communities, initial_positions)
         
         planarity_tester = PlanarityTester(graph)
         planar_edges = planarity_tester.get_planar_subgraph(edge_priorities)
         
-        # Step 3: Spring layout on planar subgraph
-        self.spring_layout = SpringLayout(graph, self.config)
+        # Step 4: Refined spring layout on extracted planar subgraph
         continuous_positions = self.spring_layout.compute_layout(planar_edges)
         
         # Step 4: Calculate auxiliary grid dimensions (like paper's approach)
         auxiliary_grid_size = self._calculate_auxiliary_grid_dimensions(len(graph.nodes()))
         
-        # Step 5: Use specialized auxiliary grid placement (like paper's approach)
-        final_positions = self._distribute_on_auxiliary_grid(graph.nodes(), auxiliary_grid_size)
+        # Step 5: Rasterize continuous positions to grid coordinates
+        final_positions = self.rasterizer.rasterize_positions(continuous_positions, auxiliary_grid_size)
+        
+        # Step 6: Apply grid compaction with monotone remapping
+        final_positions = self.rasterizer.compact_grid(final_positions)
         
         return final_positions, planar_edges, communities
     
@@ -351,61 +553,3 @@ class PlacementEngine:
         
         return (grid_width, grid_height)
     
-    def _distribute_on_auxiliary_grid(self, nodes: list, auxiliary_grid_size: Tuple[int, int]) -> Dict[int, Tuple[int, int]]:
-        """
-        Distribute logical qubits across auxiliary grid using HAL's generic placement algorithm for non-geometric codes.
-        This creates a more uniform distribution instead of clustering.
-        """
-        grid_width, grid_height = auxiliary_grid_size
-        node_list = list(nodes)
-        n_nodes = len(node_list)
-        
-        if n_nodes == 0:
-            return {}
-        
-        # Create a distributed placement strategy
-        positions = {}
-        
-        # Strategy 1: Grid-based distribution achieving HAL's target hardware efficiency (50% for 10×6 grid with 30 qubits)
-        # Distribute nodes roughly evenly across the auxiliary grid
-        spacing_x = max(1, grid_width // max(1, int(n_nodes**0.5)))
-        spacing_y = max(1, grid_height // max(1, int(n_nodes**0.5)))
-        
-        # Add some randomization to avoid perfect regularity
-        np.random.seed(self.config.random_seed)
-        
-        placed_positions = set()
-        
-        for i, node in enumerate(node_list):
-            # Try distributed placement first
-            attempts = 0
-            max_attempts = 20
-            
-            while attempts < max_attempts:
-                if attempts < 10:
-                    # First 10 attempts: try systematic distribution
-                    row = (i // int(n_nodes**0.5)) * spacing_y + np.random.randint(0, max(1, spacing_y))
-                    col = (i % int(n_nodes**0.5)) * spacing_x + np.random.randint(0, max(1, spacing_x))
-                else:
-                    # Remaining attempts: random placement
-                    row = np.random.randint(0, grid_height)
-                    col = np.random.randint(0, grid_width)
-                
-                # Ensure within bounds
-                row = max(0, min(grid_height - 1, row))
-                col = max(0, min(grid_width - 1, col))
-                
-                if (col, row) not in placed_positions:
-                    positions[node] = (col, row)
-                    placed_positions.add((col, row))
-                    break
-                
-                attempts += 1
-            
-            # If we couldn't find a free position, place it anywhere
-            if node not in positions:
-                row = i % grid_height
-                col = (i // grid_height) % grid_width
-                positions[node] = (col, row)
-        
-        return positions

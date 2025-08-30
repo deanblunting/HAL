@@ -208,14 +208,15 @@ class GraphAnalyzer:
         
         return self._distance_cache
     
-    def get_edge_priorities(self, communities: Dict[int, int]) -> List[Tuple[int, int]]:
-        """Get edges sorted by priority for planar subgraph extraction exactly as described in the paper.
+    def get_edge_priorities(self, communities: Dict[int, int], node_positions: Optional[Dict[int, Tuple[float, float]]] = None) -> List[Tuple[int, int]]:
+        """Get edges sorted by priority for planar subgraph extraction.
         
-        Paper's approach (Section A.1.a): "Edges are sorted: first, all intra-community edges are 
-        ordered by increasing length, followed by the inter-community edges, again from short to long."
+        Paper (Section A.1.a): "For each edge, we then extract whether it is an intra- or 
+        inter-community edge and the Euclidean length of the straight segment between its 
+        endpoints. Edges are sorted: first, all intra-community edges are ordered by increasing 
+        length, followed by the inter-community edges, again from short to long."
         """
         edges = list(self.graph.edges())
-        distances = self.compute_all_pairs_shortest_paths()
         
         # Separate intra-community and inter-community edges
         intra_community_edges = []
@@ -226,26 +227,39 @@ class GraphAnalyzer:
             u_community = communities.get(u, -1)
             v_community = communities.get(v, -1)
             
-            # Check if edge is intra-community or inter-community
+            # Classify edge type based on community membership
             if u_community == v_community and u_community != -1:
                 intra_community_edges.append(edge)
             else:
                 inter_community_edges.append(edge)
         
-        # Sort each group by increasing graph distance (Euclidean length in 2D layout)
-        def get_edge_length(edge):
-            u, v = edge
-            return distances.get((u, v), float('inf'))
+        # Define edge length function based on available position data
+        if node_positions:
+            def get_euclidean_length(edge):
+                """Compute Euclidean length between endpoints as specified in paper."""
+                u, v = edge
+                if u in node_positions and v in node_positions:
+                    x1, y1 = node_positions[u]
+                    x2, y2 = node_positions[v]
+                    return np.sqrt((x2 - x1)**2 + (y2 - y1)**2)
+                return float('inf')
+            
+            length_function = get_euclidean_length
+        else:
+            # Fallback to graph-theoretic distances when positions unavailable
+            distances = self.compute_all_pairs_shortest_paths()
+            
+            def get_graph_distance(edge):
+                u, v = edge
+                return distances.get((u, v), float('inf'))
+            
+            length_function = get_graph_distance
         
-        # Sort intra-community edges by increasing length
-        intra_community_edges.sort(key=get_edge_length)
+        # Sort edge groups by increasing length as specified in paper
+        intra_community_edges.sort(key=length_function)
+        inter_community_edges.sort(key=length_function)
         
-        # Sort inter-community edges by increasing length  
-        inter_community_edges.sort(key=get_edge_length)
-        
-        # Return intra-community edges first, then inter-community edges
-        # This matches the paper: "first, all intra-community edges are ordered by increasing length, 
-        # followed by the inter-community edges"
+        # Return prioritized edge list: intra-community first, then inter-community
         return intra_community_edges + inter_community_edges
     
     def analyze_connectivity(self) -> Dict[str, any]:

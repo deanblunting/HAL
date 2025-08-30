@@ -862,7 +862,10 @@ class RoutingEngine:
     
     def _calculate_straight_line_distance(self, edge: Tuple[int, int], 
                                         node_positions: Dict[int, Tuple[int, int]]) -> float:
-        """Calculate straight-line distance between edge endpoints for routing prioritization."""
+        """
+        Calculate straight-line length estimate for routing prioritization.
+        Uses Bresenham line algorithm to count grid cells for precise routing cost estimation.
+        """
         u, v = edge
         if u not in node_positions or v not in node_positions:
             return float('inf')
@@ -870,8 +873,46 @@ class RoutingEngine:
         x1, y1 = node_positions[u]
         x2, y2 = node_positions[v]
         
-        # Euclidean distance
-        return ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5
+        # Use Bresenham line algorithm to calculate exact straight-line path length in grid units
+        line_points = self._bresenham_line_for_distance(x1, y1, x2, y2)
+        
+        # Return path length as number of grid steps for accurate routing cost estimation
+        return float(len(line_points) - 1) if len(line_points) > 1 else 0.0
+    
+    def _bresenham_line_for_distance(self, x1: int, y1: int, x2: int, y2: int) -> List[Tuple[int, int]]:
+        """Bresenham line algorithm for precise grid-based distance calculation."""
+        points = []
+        
+        dx = abs(x2 - x1)
+        dy = abs(y2 - y1)
+        
+        x_step = 1 if x1 < x2 else -1
+        y_step = 1 if y1 < y2 else -1
+        
+        x, y = x1, y1
+        
+        if dx > dy:
+            error = dx / 2.0
+            while x != x2:
+                points.append((x, y))
+                error -= dy
+                if error < 0:
+                    y += y_step
+                    error += dx
+                x += x_step
+            points.append((x2, y2))
+        else:
+            error = dy / 2.0
+            while y != y2:
+                points.append((x, y))
+                error -= dx
+                if error < 0:
+                    x += x_step
+                    error += dy
+                y += y_step
+            points.append((x2, y2))
+        
+        return points
     
     def _add_auxiliary_infrastructure_routing(self, tiers: List[RoutingTier], 
                                            node_positions: Dict[int, Tuple[int, int]], 

@@ -233,12 +233,10 @@ class HAL:
                 tier_utilizations.append(0.0)
                 continue
             
-            # Estimate tier size from occupied cells
-            if tier:
-                max_x = max(cell[0] for cell in tier) + 1
-                max_y = max(cell[1] for cell in tier) + 1
-                tier_size = max_x * max_y
-                tier_occupied = len(tier)
+            # Calculate tier size and occupied cells from RoutingTier grid
+            if tier and hasattr(tier, 'grid'):
+                tier_size = tier.grid.shape[0] * tier.grid.shape[1]
+                tier_occupied = np.sum(tier.grid)
             else:
                 tier_size = 1
                 tier_occupied = 0

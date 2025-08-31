@@ -722,15 +722,17 @@ class RoutingEngine:
             segments, bump_count = self.bump_manager.add_bump_transitions(path)
             total_bumps += bump_count
             
-            # Track tier usage for TSV calculation
-            tiers_used = set()
-            for pos in path:
-                tiers_used.add(self._get_tier_from_z_level(pos[2]))
+            # TSV calculation: Find which tier this edge is routed on
+            edge_tier = 0  # Default to tier 0
+            for tier_id, tier in enumerate(tiers):
+                if edge in tier.edges:
+                    edge_tier = tier_id
+                    break
             
-            # TSVs needed = number of higher tiers used by this edge
-            higher_tiers_used = len([t for t in tiers_used if t > 0])
-            if higher_tiers_used > 0:
-                edge_tsvs[edge] = higher_tiers_used
+            # If edge is routed on tier > 0, it needs TSVs to connect back to logical qubits
+            if edge_tier > 0:
+                # Each edge on higher tiers needs 2 TSVs (one at each end to connect to tier 0)
+                edge_tsvs[edge] = 2
         
         num_edges = len(edge_routes)
         

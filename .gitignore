@@ -141,4 +141,4 @@ Thumbs.db
 # Project specific
 .claude/
 *.pdf
-img/
+CLAUDE.md

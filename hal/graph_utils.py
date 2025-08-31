@@ -747,7 +747,6 @@ def create_specific_radial_codes() -> Dict[str, nx.Graph]:
     return codes
 
 
-# Star codes removed - use radial codes instead
 
 
 def create_hypergraph_code_graph(n: int, k: int, connectivity_pattern: str = 'random') -> nx.Graph:

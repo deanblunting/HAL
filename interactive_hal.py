@@ -12,9 +12,9 @@ import networkx as nx
 from hal import HAL, HALConfig
 from hal.graph_utils import (
     create_surface_code_graph, 
-    create_bicycle_code_graph, 
+    create_bicycle_code_graph,
+    create_tile_code_graph,
     create_radial_code_graph,
-    create_specific_radial_codes,
     create_hypergraph_code_graph,
     get_code_custom_positions
 )
@@ -71,19 +71,18 @@ def select_code_type():
     """Present quantum code type selection interface for user specification."""
     print("\nSelect quantum code type:")
     print("1. Surface code (2D grid)")
-    print("2. Bicycle code (toric structure)")
-    print("3. Radial code (concentric rings)")
-    print("4. Predefined radial code (from research paper)")
+    print("2. BB code (bivariate bicycle, toric structure)")
+    print("3. Tile code (open-boundary, O(1) locality)")
+    print("4. Radial code (concentric rings)")
     print("5. Custom hypergraph code")
-    print("6. Auto-detect best fit")
     
     while True:
         try:
-            choice = int(input("\nEnter choice (1-6): "))
-            if 1 <= choice <= 6:
+            choice = int(input("\nEnter choice (1-5): "))
+            if 1 <= choice <= 5:
                 return choice
             else:
-                print("Error: Please enter a number between 1 and 6")
+                print("Error: Please enter a number between 1 and 5")
         except ValueError:
             print("Error: Please enter a valid number")
 
@@ -99,16 +98,27 @@ def generate_code_graph(n, k, d, code_type):
         graph = create_surface_code_graph(rows, cols)
         return graph, 'surface', {'rows': rows, 'cols': cols}
     
-    elif code_type == 2:  # Bicycle code
-        # Determine bicycle code construction parameters
+    elif code_type == 2:  # BB code
+        # Determine BB code construction parameters
         n1 = int(n**0.5)
         n2 = (n + n1 - 1) // n1
         a, b = 1, 1  # Simple shift parameters
-        print(f"Generating bicycle code with n1={n1}, n2={n2}, a={a}, b={b}...")
+        print(f"Generating BB code with n1={n1}, n2={n2}, a={a}, b={b}...")
         graph = create_bicycle_code_graph(n1, n2, a, b)
         return graph, 'bicycle', {'n1': n1, 'n2': n2}
     
-    elif code_type == 3:  # Radial code
+    elif code_type == 3:  # Tile code
+        # Determine tile code parameters from qubit count
+        tile_size = 3  # Standard 3x3 tiles
+        total_tiles = max(1, n // (tile_size * tile_size))
+        tiles_per_side = max(1, int(total_tiles**0.5))
+        tiles_x = tiles_per_side
+        tiles_y = (total_tiles + tiles_per_side - 1) // tiles_per_side
+        print(f"Generating tile code with {tiles_x}x{tiles_y} tiles of size {tile_size}x{tile_size}...")
+        graph = create_tile_code_graph(tiles_x, tiles_y, tile_size)
+        return graph, 'tile', {'tiles_x': tiles_x, 'tiles_y': tiles_y, 'tile_size': tile_size}
+    
+    elif code_type == 4:  # Radial code
         # Derive radial code parameters from qubit count constraint
         # Optimize radial code parameters for target qubit count
         best_r, best_s = 2, max(1, n // 8)
@@ -120,41 +130,11 @@ def generate_code_graph(n, k, d, code_type):
         graph = create_radial_code_graph(best_r, best_s)
         return graph, 'radial', {'r': best_r, 's': best_s}
     
-    elif code_type == 4:  # Predefined radial codes
-        codes = create_specific_radial_codes()
-        print("\nAvailable predefined radial codes:")
-        code_list = list(codes.keys())
-        for i, code_name in enumerate(code_list, 1):
-            print(f"  {i}. {code_name}")
-        
-        while True:
-            try:
-                choice = int(input(f"\nSelect predefined code (1-{len(code_list)}): "))
-                if 1 <= choice <= len(code_list):
-                    selected_code = code_list[choice - 1]
-                    print(f"Using predefined code {selected_code}...")
-                    graph = codes[selected_code]
-                    return graph, 'radial', {}
-                else:
-                    print(f"Error: Please enter a number between 1 and {len(code_list)}")
-            except ValueError:
-                print("Error: Please enter a valid number")
-    
     elif code_type == 5:  # Custom hypergraph code
         avg_degree = min(6, n // 2)  # Reasonable default
         print(f"Generating hypergraph code with average degree {avg_degree}...")
         graph = create_hypergraph_code_graph(n, avg_degree, 'structured')
         return graph, 'hypergraph', {}
-    
-    elif code_type == 6:  # Auto-detect
-        print("Auto-detecting best code type based on parameters...")
-        # Apply heuristic code family selection criteria
-        if d <= 5 and n <= 25:
-            return generate_code_graph(n, k, d, 1)  # Surface code for small distances
-        elif n >= 50 and d >= 10:
-            return generate_code_graph(n, k, d, 3)  # Radial code for large codes
-        else:
-            return generate_code_graph(n, k, d, 2)  # Bicycle code as default
 
 
 def configure_hal():

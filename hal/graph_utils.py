@@ -344,6 +344,75 @@ def create_bicycle_code_graph(n1: int, n2: int, a: int, b: int) -> nx.Graph:
     return G
 
 
+def create_tile_code_graph(tiles_x: int, tiles_y: int, tile_size: int = 3, 
+                          boundary_type: str = 'open') -> nx.Graph:
+    """
+    Create a tile code connectivity graph with open boundaries.
+    
+    Tile codes implement quantum error correction on a planar surface using 
+    bounded tiles that are truncated at boundaries for true O(1)-locality.
+    
+    Args:
+        tiles_x: Number of tiles in x direction
+        tiles_y: Number of tiles in y direction
+        tile_size: Size of each square tile (default 3x3)
+        boundary_type: 'open' for open boundaries (default), 'periodic' for periodic
+    
+    Returns:
+        NetworkX graph representing the tile code with O(1) locality
+    """
+    G = nx.Graph()
+    
+    # Create nodes for each tile position
+    node_id = 0
+    node_positions = {}
+    
+    # Place data qubits and check qubits within each tile
+    for tile_y in range(tiles_y):
+        for tile_x in range(tiles_x):
+            base_x = tile_x * tile_size
+            base_y = tile_y * tile_size
+            
+            # Add nodes within this tile
+            tile_nodes = []
+            for i in range(tile_size):
+                for j in range(tile_size):
+                    x, y = base_x + j, base_y + i
+                    G.add_node(node_id)
+                    node_positions[node_id] = (x, y)
+                    tile_nodes.append(node_id)
+                    node_id += 1
+            
+            # Connect nodes within the tile (star configuration)
+            center_node = tile_nodes[len(tile_nodes)//2]  # Central node as check qubit
+            for node in tile_nodes:
+                if node != center_node:
+                    G.add_edge(center_node, node)
+    
+    # Add inter-tile connections based on boundary conditions
+    if boundary_type == 'open':
+        # For open boundaries, only connect adjacent internal tiles
+        # No connections that would wrap around boundaries
+        for tile_y in range(tiles_y - 1):
+            for tile_x in range(tiles_x - 1):
+                current_tile_center = tile_y * tiles_x * (tile_size * tile_size) + \
+                                    tile_x * (tile_size * tile_size) + (tile_size * tile_size) // 2
+                
+                # Connect to right tile
+                if tile_x < tiles_x - 1:
+                    right_tile_center = current_tile_center + (tile_size * tile_size)
+                    if G.has_node(current_tile_center) and G.has_node(right_tile_center):
+                        G.add_edge(current_tile_center, right_tile_center)
+                
+                # Connect to bottom tile  
+                if tile_y < tiles_y - 1:
+                    bottom_tile_center = current_tile_center + tiles_x * (tile_size * tile_size)
+                    if G.has_node(current_tile_center) and G.has_node(bottom_tile_center):
+                        G.add_edge(current_tile_center, bottom_tile_center)
+    
+    return G
+
+
 def create_radial_code_graph(r: int, s: int) -> nx.Graph:
     """
     Create a radial code connectivity graph with exactly 2r degree per node.
@@ -704,47 +773,6 @@ def create_radial_code_graph_legacy(rings: int, nodes_per_ring: int, ring_connec
     
     return G
 
-
-def create_specific_radial_codes() -> Dict[str, nx.Graph]:
-    """
-    Create specific radial codes with kd²/n > 10 as identified in Appendix F.
-    
-    Returns:
-        Dictionary mapping code names to their corresponding graphs
-    """
-    codes = {}
-    
-    # From Appendix F, radial codes with kd²/n > 10:
-    # Parameters format: [n, k, d] with kd²/n value
-    
-    # [88, 2, 22] - kd²/n = 11.0 (r=2, s=11)
-    codes['[88,2,22]'] = create_radial_code_graph(r=2, s=11)
-    
-    # [160, 18, 10] - kd²/n = 11.25 (r=3, s=~8.89, round to s=9)
-    codes['[160,18,10]'] = create_radial_code_graph(r=3, s=9)
-    
-    # [126, 8, 14] - kd²/n = 12.44 (r=3, s=7)
-    codes['[126,8,14]'] = create_radial_code_graph(r=3, s=7)
-    
-    # [104, 2, 26] - kd²/n = 13.0 (r=2, s=13)
-    codes['[104,2,26]'] = create_radial_code_graph(r=2, s=13)
-    
-    # [224, 18, 14] - kd²/n = 15.75 (r=4, s=7)
-    codes['[224,18,14]'] = create_radial_code_graph(r=4, s=7)
-    
-    # [198, 8, 22] - kd²/n = 19.56 (r=3, s=11)
-    codes['[198,8,22]'] = create_radial_code_graph(r=3, s=11)
-    
-    # [234, 8, 26] - kd²/n = 23.11 (r=3, s=13)
-    codes['[234,8,26]'] = create_radial_code_graph(r=3, s=13)
-    
-    # [352, 18, 22] - kd²/n = 24.75 (r=4, s=11)
-    codes['[352,18,22]'] = create_radial_code_graph(r=4, s=11)
-    
-    # [416, 18, 26] - kd²/n = 29.25 (r=4, s=13)
-    codes['[416,18,26]'] = create_radial_code_graph(r=4, s=13)
-    
-    return codes
 
 
 

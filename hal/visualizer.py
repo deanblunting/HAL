@@ -314,16 +314,30 @@ class HALVisualizer:
             else:
                 logical_routes.append((edge, path))
         
-        # Create a subplot for each tier
+        # Create a subplot for each tier with multi-row layout for better visibility
         n_tiers = len(layout.tiers)
+        if n_tiers <= 5:
+            rows, cols = 1, n_tiers
+        else:
+            rows = 2
+            cols = (n_tiers + 1) // 2  # Ceiling division
+        
+        # Create subplot grid
+        subplot_titles = [f"Tier {i}" for i in range(n_tiers)]
+        # Pad with empty titles for unused subplots
+        while len(subplot_titles) < rows * cols:
+            subplot_titles.append("")
+        
         fig = make_subplots(
-            rows=1, cols=n_tiers,
-            subplot_titles=[f"Tier {i}" for i in range(n_tiers)],
-            specs=[[{"type": "scatter"} for _ in range(n_tiers)]]
+            rows=rows, cols=cols,
+            subplot_titles=subplot_titles,
+            specs=[[{"type": "scatter"} for _ in range(cols)] for _ in range(rows)]
         )
         
         for tier_id, tier in enumerate(layout.tiers):
-            col = tier_id + 1
+            # Calculate row and column for this tier
+            row = (tier_id // cols) + 1
+            col = (tier_id % cols) + 1
             
             # Show auxiliary grid lines for this tier
             grid_width, grid_height = tier.grid.shape[0], tier.grid.shape[1]
@@ -336,7 +350,7 @@ class HALVisualizer:
                     line=dict(width=1, color='lightgray'),
                     showlegend=False,
                     opacity=0.3
-                ), row=1, col=col)
+                ), row=row, col=col)
             
             for y in range(grid_height + 1):
                 fig.add_trace(go.Scatter(
@@ -345,7 +359,7 @@ class HALVisualizer:
                     line=dict(width=1, color='lightgray'),
                     showlegend=False,
                     opacity=0.3
-                ), row=1, col=col)
+                ), row=row, col=col)
             
             # Plot logical qubits (only on tier 0)
             if tier_id == 0:
@@ -361,7 +375,7 @@ class HALVisualizer:
                     textposition="middle center",
                     name="Logical Qubits",
                     showlegend=(tier_id == 0)
-                ), row=1, col=col)
+                ), row=row, col=col)
             
             # Plot logical routes for this tier
             tier_colors = px.colors.qualitative.Set1
@@ -382,7 +396,7 @@ class HALVisualizer:
                         marker=dict(size=4, color=color),
                         name=f"T{tier_id} Edge {edge[0]}-{edge[1]}",
                         showlegend=False
-                    ), row=1, col=col)
+                    ), row=row, col=col)
             
             # Plot infrastructure routes for this tier
             infrastructure_colors = {
@@ -428,7 +442,7 @@ class HALVisualizer:
                     name=f"Infrastructure ({infra_type})",
                     showlegend=(tier_id == 0 and infra_type not in [trace.name.split('(')[-1].rstrip(')') for trace in fig.data if hasattr(trace, 'name') and 'Infrastructure' in str(trace.name)]),
                     opacity=0.4
-                ), row=1, col=col)
+                ), row=row, col=col)
             
             # Show occupied cells in this tier
             occupied_cells = []
@@ -448,25 +462,34 @@ class HALVisualizer:
                     marker=dict(size=3, color=tier_colors[tier_id % len(tier_colors)], opacity=0.5),
                     name=f"Tier {tier_id} occupied",
                     showlegend=(tier_id < 3)
-                ), row=1, col=col)
+                ), row=row, col=col)
         
         # Count routes
         logical_count = len(logical_routes)
         infrastructure_count = len(infrastructure_routes)
+        
+        # Calculate better sizing for multi-row layout
+        subplot_width = 400  # Wider subplots for better visibility
+        subplot_height = 400
+        total_width = subplot_width * cols
+        total_height = subplot_height * rows
         
         fig.update_layout(
             title=f"HAL Multi-Tier Layout - {len(layout.node_positions)} logical qubits, "
                   f"{logical_count} logical edges, {infrastructure_count} infrastructure routes<br>"
                   f"{len(layout.tiers)} tiers, Hardware Cost: {layout.hardware_cost:.2f}<br>"
                   f"<i>Each tier shown separately for enhanced visualization clarity</i>",
-            height=500,
-            width=300 * n_tiers
+            height=total_height,
+            width=total_width
         )
         
         # Update axes for each subplot
         for i in range(n_tiers):
-            fig.update_xaxes(title_text="X", row=1, col=i+1)
-            fig.update_yaxes(title_text="Y", row=1, col=i+1)
+            # Calculate row and column for this tier
+            subplot_row = (i // cols) + 1
+            subplot_col = (i % cols) + 1
+            fig.update_xaxes(title_text="X", row=subplot_row, col=subplot_col)
+            fig.update_yaxes(title_text="Y", row=subplot_row, col=subplot_col)
         
         fig.show()
     
@@ -477,10 +500,24 @@ class HALVisualizer:
             return
         
         n_tiers = len(layout.tiers)
-        fig, axes = plt.subplots(1, n_tiers, figsize=(6 * n_tiers, 6))
+        # Create multi-row layout for better visibility when many tiers
+        if n_tiers <= 5:
+            rows, cols = 1, n_tiers
+        else:
+            rows = 2
+            cols = (n_tiers + 1) // 2  # Ceiling division
         
-        if n_tiers == 1:
+        # Make each tier subplot larger
+        subplot_size = 5  # 5x5 inches per subplot
+        fig, axes = plt.subplots(rows, cols, figsize=(subplot_size * cols, subplot_size * rows))
+        
+        # Handle axis indexing for both single row and multi-row cases
+        if rows == 1 and cols == 1:
             axes = [axes]
+        elif rows == 1:
+            axes = list(axes) if hasattr(axes, '__iter__') else [axes]
+        else:
+            axes = axes.flatten()
         
         # Separate logical and infrastructure routes
         logical_routes = []
@@ -574,6 +611,12 @@ class HALVisualizer:
             ax.set_ylabel('Y')
             ax.grid(True, alpha=0.3)
             ax.set_aspect('equal')
+        
+        # Hide unused subplots if we have a multi-row layout
+        if rows * cols > n_tiers:
+            for i in range(n_tiers, rows * cols):
+                if i < len(axes):
+                    axes[i].set_visible(False)
         
         logical_count = len(logical_routes)
         infrastructure_count = len(infrastructure_routes)

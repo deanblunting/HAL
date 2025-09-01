@@ -11,7 +11,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import networkx as nx
 from hal import HAL, HALConfig
 from hal.graph_utils import (
-    create_surface_code_graph, 
     create_bicycle_code_graph,
     create_tile_code_graph,
     create_radial_code_graph,
@@ -26,7 +25,6 @@ def get_user_input():
     print("=" * 55)
     print()
     
-    print("This tool generates optimal hardware layouts for quantum error correcting codes.")
     print("Please provide the code parameters [n,k,d] where:")
     print("  n = total number of qubits")
     print("  k = number of logical qubits")  
@@ -70,19 +68,18 @@ def get_user_input():
 def select_code_type():
     """Present quantum code type selection interface for user specification."""
     print("\nSelect quantum code type:")
-    print("1. Surface code (2D grid)")
-    print("2. BB code (bivariate bicycle, toric structure)")
-    print("3. Tile code (open-boundary, O(1) locality)")
-    print("4. Radial code (concentric rings)")
-    print("5. Custom hypergraph code")
+    print("1. BB code (bivariate bicycle, toric structure)")
+    print("2. Tile code (open-boundary, O(1) locality)")
+    print("3. Radial code (concentric rings)")
+    print("4. Custom hypergraph code")
     
     while True:
         try:
-            choice = int(input("\nEnter choice (1-5): "))
-            if 1 <= choice <= 5:
+            choice = int(input("\nEnter choice (1-4): "))
+            if 1 <= choice <= 4:
                 return choice
             else:
-                print("Error: Please enter a number between 1 and 5")
+                print("Error: Please enter a number between 1 and 4")
         except ValueError:
             print("Error: Please enter a valid number")
 
@@ -90,15 +87,7 @@ def select_code_type():
 def generate_code_graph(n, k, d, code_type):
     """Construct quantum code connectivity graph according to specified parameters and type."""
     
-    if code_type == 1:  # Surface code
-        # Calculate optimal grid dimensions from total qubit count
-        rows = int(n**0.5)
-        cols = (n + rows - 1) // rows
-        print(f"Generating {rows}x{cols} surface code...")
-        graph = create_surface_code_graph(rows, cols)
-        return graph, 'surface', {'rows': rows, 'cols': cols}
-    
-    elif code_type == 2:  # BB code
+    if code_type == 1:  # BB code
         # Determine BB code construction parameters
         n1 = int(n**0.5)
         n2 = (n + n1 - 1) // n1
@@ -107,7 +96,7 @@ def generate_code_graph(n, k, d, code_type):
         graph = create_bicycle_code_graph(n1, n2, a, b)
         return graph, 'bicycle', {'n1': n1, 'n2': n2}
     
-    elif code_type == 3:  # Tile code
+    elif code_type == 2:  # Tile code
         # Determine tile code parameters from qubit count
         tile_size = 3  # Standard 3x3 tiles
         total_tiles = max(1, n // (tile_size * tile_size))
@@ -118,7 +107,7 @@ def generate_code_graph(n, k, d, code_type):
         graph = create_tile_code_graph(tiles_x, tiles_y, tile_size)
         return graph, 'tile', {'tiles_x': tiles_x, 'tiles_y': tiles_y, 'tile_size': tile_size}
     
-    elif code_type == 4:  # Radial code
+    elif code_type == 3:  # Radial code
         # Derive radial code parameters from qubit count constraint
         # Optimize radial code parameters for target qubit count
         best_r, best_s = 2, max(1, n // 8)
@@ -130,7 +119,7 @@ def generate_code_graph(n, k, d, code_type):
         graph = create_radial_code_graph(best_r, best_s)
         return graph, 'radial', {'r': best_r, 's': best_s}
     
-    elif code_type == 5:  # Custom hypergraph code
+    elif code_type == 4:  # Custom hypergraph code
         avg_degree = min(6, n // 2)  # Reasonable default
         print(f"Generating hypergraph code with average degree {avg_degree}...")
         graph = create_hypergraph_code_graph(n, avg_degree, 'structured')

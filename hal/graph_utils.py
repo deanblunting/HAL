@@ -294,28 +294,6 @@ def create_qecc_graph_from_edges(edges: List[Tuple[int, int]]) -> nx.Graph:
     return G
 
 
-def create_surface_code_graph(rows: int, cols: int) -> nx.Graph:
-    """Create a surface code connectivity graph."""
-    G = nx.Graph()
-    
-    # Add nodes
-    for i in range(rows):
-        for j in range(cols):
-            G.add_node(i * cols + j)
-    
-    # Add nearest-neighbor edges
-    for i in range(rows):
-        for j in range(cols):
-            node = i * cols + j
-            # Right neighbor
-            if j + 1 < cols:
-                G.add_edge(node, node + 1)
-            # Down neighbor
-            if i + 1 < rows:
-                G.add_edge(node, node + cols)
-    
-    return G
-
 
 def create_bicycle_code_graph(n1: int, n2: int, a: int, b: int) -> nx.Graph:
     """Create a bivariate bicycle code connectivity graph."""
@@ -525,23 +503,6 @@ def create_radial_code_graph(r: int, s: int) -> nx.Graph:
     return G
 
 
-def create_surface_code_positions(rows: int, cols: int) -> Dict[int, Tuple[int, int]]:
-    """
-    Create custom positions for surface code on a regular square grid.
-    
-    Args:
-        rows: Number of rows
-        cols: Number of columns
-    
-    Returns:
-        Dictionary mapping node IDs to (x, y) positions
-    """
-    positions = {}
-    for i in range(rows):
-        for j in range(cols):
-            node_id = i * cols + j
-            positions[node_id] = (j, i)  # (x, y) where x=col, y=row
-    return positions
 
 
 def create_bicycle_code_positions(n1: int, n2: int) -> Dict[int, Tuple[int, int]]:
@@ -668,13 +629,7 @@ def get_code_custom_positions(graph: nx.Graph, code_type: str,
     """
     n_nodes = graph.number_of_nodes()
     
-    if code_type == 'surface':
-        # Estimate grid dimensions
-        rows = kwargs.get('rows', int(n_nodes**0.5))
-        cols = kwargs.get('cols', (n_nodes + rows - 1) // rows)
-        return create_surface_code_positions(rows, cols)
-    
-    elif code_type == 'bicycle':
+    if code_type == 'bicycle':
         # Estimate dimensions for bicycle code
         n1 = kwargs.get('n1', int(n_nodes**0.5))
         n2 = kwargs.get('n2', (n_nodes + n1 - 1) // n1)

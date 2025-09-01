@@ -30,7 +30,7 @@ def load_codes_from_csv(csv_path='qecc_codes.csv'):
     return codes
 
 
-def process_codes_parallel(codes, n_processes=None, output_file='qecc_results_parallel.json'):
+def process_codes_parallel(codes, n_processes=5, output_file='qecc_results_parallel.json'):
     """Process all codes using parallel HAL processing."""
     
     print(f"Starting parallel processing of {len(codes)} codes...")

@@ -295,10 +295,21 @@ def create_qecc_graph_from_edges(edges: List[Tuple[int, int]]) -> nx.Graph:
 
 
 
-def create_bicycle_code_graph(n1: int, n2: int, a: int, b: int) -> nx.Graph:
-    """Create a bivariate bicycle code connectivity graph."""
+def create_bicycle_code_graph(n: int, k: int, d: int) -> nx.Graph:
+    """
+    Create a bivariate bicycle code connectivity graph from [n,k,d] parameters.
+    Uses heuristic to determine torus dimensions and shift parameters.
+    """
+    # Determine torus dimensions - try to make it as square as possible
+    n1 = int(n**0.5)
+    while n % n1 != 0 and n1 > 1:
+        n1 -= 1
+    n2 = n // n1
+    
+    # Use simple shift parameters as default
+    a, b = 1, 1
+    
     G = nx.Graph()
-    n = n1 * n2
     
     # Add nodes
     for i in range(n):
@@ -322,23 +333,26 @@ def create_bicycle_code_graph(n1: int, n2: int, a: int, b: int) -> nx.Graph:
     return G
 
 
-def create_tile_code_graph(tiles_x: int, tiles_y: int, tile_size: int = 3, 
-                          boundary_type: str = 'open') -> nx.Graph:
+def create_tile_code_graph(n: int, k: int, d: int) -> nx.Graph:
     """
-    Create a tile code connectivity graph with open boundaries.
-    
-    Tile codes implement quantum error correction on a planar surface using 
-    bounded tiles that are truncated at boundaries for true O(1)-locality.
+    Create a tile code connectivity graph from [n,k,d] parameters.
+    Uses heuristic to determine tile arrangement with open boundaries.
     
     Args:
-        tiles_x: Number of tiles in x direction
-        tiles_y: Number of tiles in y direction
-        tile_size: Size of each square tile (default 3x3)
-        boundary_type: 'open' for open boundaries (default), 'periodic' for periodic
+        n: Number of physical qubits
+        k: Number of logical qubits
+        d: Distance of the code
     
     Returns:
         NetworkX graph representing the tile code with O(1) locality
     """
+    # Determine tile arrangement from n
+    tile_size = 3  # Standard 3x3 tiles
+    total_tiles = max(1, n // (tile_size * tile_size))
+    tiles_per_side = max(1, int(total_tiles**0.5))
+    tiles_x = tiles_per_side
+    tiles_y = (total_tiles + tiles_per_side - 1) // tiles_per_side
+    
     G = nx.Graph()
     
     # Create nodes for each tile position
@@ -391,22 +405,29 @@ def create_tile_code_graph(tiles_x: int, tiles_y: int, tile_size: int = 3,
     return G
 
 
-def create_radial_code_graph(r: int, s: int) -> nx.Graph:
+def create_radial_code_graph(n: int, k: int, d: int) -> nx.Graph:
     """
-    Create a radial code connectivity graph with exactly 2r degree per node.
+    Create a radial code connectivity graph from [n,k,d] parameters.
+    Uses heuristic to determine r and s parameters.
     
     Creates a quantum radial code with parameters [2r²s, 2(r-1)², ≤2s].
     Each qubit connects to exactly 2r other qubits.
     
     Args:
-        r: Number of concentric rings 
-        s: Number of spokes per ring
+        n: Number of physical qubits
+        k: Number of logical qubits
+        d: Distance of the code
     
     Returns:
         NetworkX graph with n=2r²s nodes, each having degree 2r
     """
+    # Determine r and s parameters from [n,k,d]
+    # For radial codes: n = 2r²s, k = 2(r-1)², d ≤ 2s
+    # Rough heuristic: r = sqrt(k), s chosen to get close to n qubits
+    r = max(2, int((k)**0.5))
+    s = max(4, n // (2 * r**2))
+    
     G = nx.Graph()
-    n = 2 * r * r * s  # Total qubits
     target_degree = 2 * r
     
     # Add all nodes

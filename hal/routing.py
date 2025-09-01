@@ -700,7 +700,7 @@ class RoutingEngine:
                                   node_positions: Dict[int, Tuple[int, int]]) -> Dict[str, float]:
         """Calculate routing quality metrics with enhanced bump bond cost analysis."""
         if not edge_routes:
-            return {'tiers': max(len(tiers), 1), 'length': 0.0, 'bumps': 0.0, 'tsvs': 0.0, 'bump_cost': 0.0}
+            return {'tiers': max(len(tiers), 1), 'length': 0.0, 'bumps': 0.0, 'tsvs': 0.0, 'bump_cost': 0.0, 'qecc_weight': 0.0}
         
         total_length = 0.0
         total_bumps = 0
@@ -772,14 +772,58 @@ class RoutingEngine:
         total_tsvs = sum(edge_tsvs.values())
         avg_tsvs = total_tsvs / num_edges if num_edges > 0 else 0.0
         
+        # Calculate QECC weight (average node degree)
+        qecc_weight = self._calculate_qecc_weight(edge_routes, node_positions)
+        
         return {
             'tiers': len(tiers),
             'length': total_length / num_edges if num_edges > 0 else 0.0,
             'bumps': max_avg_bumps,  # Maximum average bump transitions across all tiers
             'tsvs': avg_tsvs,        # Average TSVs per edge on higher tiers
             'bump_cost': total_bump_cost / num_edges if num_edges > 0 else 0.0,  # Enhanced bump cost metric
-            'max_tier_bump_cost': max_avg_bump_cost  # Maximum average bump cost across tiers
+            'max_tier_bump_cost': max_avg_bump_cost,  # Maximum average bump cost across tiers
+            'qecc_weight': qecc_weight  # Average node degree (QECC weight)
         }
+    
+    def _calculate_qecc_weight(self, edge_routes: Dict, node_positions: Dict[int, Tuple[int, int]]) -> float:
+        """
+        Calculate the QECC weight (average node degree) from the routed connectivity graph.
+        
+        The QECC weight indicates how many other qubits each qubit is connected to on average.
+        This is a key metric for understanding code connectivity density:
+        - Weight 4: Surface codes, low-weight radial codes
+        - Weight 6: Many bicycle codes, tile codes  
+        - Weight 8+: High-weight tile codes, complex qLDPC codes
+        
+        Args:
+            edge_routes: Dictionary of edge -> routing path
+            node_positions: Dictionary of node -> grid position
+            
+        Returns:
+            Average node degree (QECC weight)
+        """
+        if not edge_routes or not node_positions:
+            return 0.0
+        
+        # Count degree for each node
+        node_degrees = {}
+        for node in node_positions.keys():
+            node_degrees[node] = 0
+        
+        # Count edges connected to each node
+        for edge in edge_routes.keys():
+            node1, node2 = edge
+            if node1 in node_degrees:
+                node_degrees[node1] += 1
+            if node2 in node_degrees:
+                node_degrees[node2] += 1
+        
+        # Calculate average degree (QECC weight)
+        if node_degrees:
+            total_degree = sum(node_degrees.values())
+            return total_degree / len(node_degrees)
+        else:
+            return 0.0
     
     def _calculate_auxiliary_qubit_grid(self, node_positions: Dict[int, Tuple[int, int]], tier_id: int) -> Tuple[int, int, int]:
         """

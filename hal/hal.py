@@ -148,15 +148,20 @@ class HAL:
     def batch_layout_codes(self, graphs: List[nx.Graph], 
                           labels: Optional[List[str]] = None,
                           custom_positions: Optional[List[Dict[int, Tuple[int, int]]]] = None,
-                          verbose: bool = False) -> Dict[str, QECCLayout]:
+                          verbose: bool = False,
+                          parallel: bool = False,
+                          n_processes: Optional[int] = None) -> Dict[str, QECCLayout]:
         """
         Execute batch processing of multiple QECC layouts with comparative analysis.
+        Supports both sequential and parallel processing.
         
         Args:
             graphs: List of connectivity graphs
             labels: Optional labels for each graph
             custom_positions: Optional list of position dictionaries
             verbose: Whether to print progress information
+            parallel: Enable parallel processing using multiprocessing
+            n_processes: Number of processes for parallel execution
             
         Returns:
             Dictionary mapping labels to QECCLayout results
@@ -169,14 +174,45 @@ class HAL:
         
         results = {}
         
-        for i, (graph, label, positions) in enumerate(zip(graphs, labels, custom_positions)):
-            if verbose:
-                print(f"\n{'='*50}")
-                print(f"Executing layout algorithm for {label} ({i+1}/{len(graphs)})")
-                print(f"{'='*50}")
+        # Use parallel processing if requested
+        if parallel:
+            from .parallel import ParallelHAL
             
-            layout = self.layout_code(graph, positions, verbose)
-            results[label] = layout
+            # Prepare code information for parallel processing
+            code_infos = []
+            for i, (graph, label, positions) in enumerate(zip(graphs, labels, custom_positions)):
+                code_infos.append({
+                    'graph': graph,
+                    'label': label,
+                    'positions': positions,
+                    'index': i
+                })
+            
+            def graph_creator(code_info):
+                return code_info['graph']  # Graph is already created
+            
+            # Process in parallel
+            parallel_hal = ParallelHAL(n_processes=n_processes, verbose=verbose)
+            parallel_results = parallel_hal.process_batch(code_infos, graph_creator)
+            
+            # Convert results back to expected format
+            for result in parallel_results:
+                if result['success']:
+                    label = result['code_info']['label']
+                    results[label] = result['layout']
+                elif verbose:
+                    label = result['code_info']['label']
+                    print(f"Failed to process {label}: {result['error']}")
+        else:
+            # Sequential processing (original behavior)
+            for i, (graph, label, positions) in enumerate(zip(graphs, labels, custom_positions)):
+                if verbose:
+                    print(f"\n{'='*50}")
+                    print(f"Executing layout algorithm for {label} ({i+1}/{len(graphs)})")
+                    print(f"{'='*50}")
+                
+                layout = self.layout_code(graph, positions, verbose)
+                results[label] = layout
         
         if verbose:
             print(f"\n{'='*50}")

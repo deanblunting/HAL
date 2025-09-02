@@ -18,7 +18,6 @@ def load_codes_by_family(data_folder='data'):
     import os
     
     code_files = {
-        'Directional': f'{data_folder}/directional_codes.csv',
         'BB': f'{data_folder}/bb_codes.csv', 
         'Tile': f'{data_folder}/tile_codes.csv',
         'Radial': f'{data_folder}/radial_codes.csv'
@@ -84,6 +83,8 @@ def select_codes_to_process(available_families):
             
             if selected_codes:
                 print(f"\nSelected {len(selected_codes)} codes from families: {', '.join(selected_families)}")
+                
+                
                 return selected_codes
             else:
                 print("No valid selections made. Please try again.")
@@ -158,7 +159,7 @@ def create_visualization(results, output_image='results/qecc_cost_vs_efficiency_
     # Create enhanced plot
     fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 12))
     
-    colors = {'BB': '#8B4A9C', 'Tile': '#FF6B6B', 'Radial': '#4ECDC4', 'Directional': '#2ECC71'}
+    colors = {'BB': '#8B4A9C', 'Tile': '#FF6B6B', 'Radial': '#4ECDC4'}
     
     # Main cost vs efficiency plot
     for family, data in families.items():

@@ -236,11 +236,11 @@ def create_qecc_graph_from_info(code_info: Dict[str, Any]) -> Optional[nx.Graph]
         family = code_info['family']
         n, k, d = code_info['n'], code_info['k'], code_info['d']
         
-        if family == 'BB code':
+        if family in ['BB code', 'BB']:
             return create_bicycle_code_graph(n, k, d)
-        elif family == 'Tile code':
+        elif family in ['Tile code', 'Tile']:
             return create_tile_code_graph(n, k, d)
-        elif family == 'Radial code':
+        elif family in ['Radial code', 'Radial']:
             return create_radial_code_graph(n, k, d)
         else:
             raise ValueError(f"Unknown code family: {family}")

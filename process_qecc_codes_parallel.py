@@ -13,24 +13,87 @@ from datetime import datetime
 from hal.parallel import ParallelHAL, create_qecc_graph_from_info
 
 
-def load_codes_from_csv(csv_path='qecc_codes.csv'):
-    """Load QECC codes from CSV file."""
-    df = pd.read_csv(csv_path)
-    codes = []
+def load_codes_by_family(data_folder='data'):
+    """Load QECC codes from separate CSV files in data folder."""
+    import os
     
-    for _, row in df.iterrows():
-        codes.append({
-            'family': row['family'],
-            'n': int(row['n']),
-            'k': int(row['k']),
-            'd': int(row['d']),
-            'logical_efficiency': row['k'] * row['d']**2 / row['n']
-        })
+    code_files = {
+        'Directional': f'{data_folder}/directional_codes.csv',
+        'BB': f'{data_folder}/bb_codes.csv', 
+        'Tile': f'{data_folder}/tile_codes.csv',
+        'Radial': f'{data_folder}/radial_codes.csv'
+    }
     
-    return codes
+    available_families = {}
+    
+    for family, csv_path in code_files.items():
+        if os.path.exists(csv_path):
+            df = pd.read_csv(csv_path)
+            codes = []
+            
+            for _, row in df.iterrows():
+                codes.append({
+                    'family': family,
+                    'n': int(row['n']),
+                    'k': int(row['k']),
+                    'd': int(row['d']),
+                    'logical_efficiency': row['k'] * row['d']**2 / row['n']
+                })
+            
+            available_families[family] = codes
+            print(f"Available: {len(codes)} {family} codes")
+        else:
+            print(f"Warning: {csv_path} not found, skipping {family} codes")
+    
+    return available_families
 
 
-def process_codes_parallel(codes, n_processes=5, output_file='qecc_results_parallel.json'):
+def select_codes_to_process(available_families):
+    """Interactive selection of which code families to process."""
+    print("\nAvailable code families:")
+    family_names = list(available_families.keys())
+    
+    for i, family in enumerate(family_names, 1):
+        print(f"  {i}. {family} ({len(available_families[family])} codes)")
+    
+    print(f"  {len(family_names)+1}. All families")
+    
+    while True:
+        try:
+            choice = input("\nSelect families to process (comma-separated numbers or 'all'): ").strip().lower()
+            
+            if choice == 'all' or choice == str(len(family_names)+1):
+                selected_codes = []
+                for codes in available_families.values():
+                    selected_codes.extend(codes)
+                return selected_codes
+            
+            # Parse comma-separated choices
+            choices = [int(x.strip()) for x in choice.split(',')]
+            selected_codes = []
+            selected_families = []
+            
+            for choice_num in choices:
+                if 1 <= choice_num <= len(family_names):
+                    family = family_names[choice_num - 1]
+                    selected_codes.extend(available_families[family])
+                    selected_families.append(family)
+                else:
+                    print(f"Invalid choice: {choice_num}")
+                    continue
+            
+            if selected_codes:
+                print(f"\nSelected {len(selected_codes)} codes from families: {', '.join(selected_families)}")
+                return selected_codes
+            else:
+                print("No valid selections made. Please try again.")
+                
+        except (ValueError, KeyboardInterrupt):
+            print("Invalid input. Please enter comma-separated numbers or 'all'.")
+            continue
+
+
+def process_codes_parallel(codes, n_processes=5, output_file='results/qecc_results_parallel.json'):
     """Process all codes using parallel HAL processing."""
     
     print(f"Starting parallel processing of {len(codes)} codes...")
@@ -74,7 +137,7 @@ def process_codes_parallel(codes, n_processes=5, output_file='qecc_results_paral
     return processed_results
 
 
-def create_visualization(results, output_image='qecc_cost_vs_efficiency_parallel.png'):
+def create_visualization(results, output_image='results/qecc_cost_vs_efficiency_parallel.png'):
     """Create hardware cost vs logical efficiency plot with enhanced information."""
     
     # Separate by code family
@@ -95,7 +158,7 @@ def create_visualization(results, output_image='qecc_cost_vs_efficiency_parallel
     # Create enhanced plot
     fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 12))
     
-    colors = {'BB code': '#8B4A9C', 'Tile code': '#FF6B6B', 'Radial code': '#4ECDC4'}
+    colors = {'BB': '#8B4A9C', 'Tile': '#FF6B6B', 'Radial': '#4ECDC4', 'Directional': '#2ECC71'}
     
     # Main cost vs efficiency plot
     for family, data in families.items():
@@ -170,12 +233,24 @@ def main():
     print("Parallel QECC Code Processing Pipeline")
     print("=" * 45)
     
-    # Load codes from CSV
-    codes = load_codes_from_csv()
-    print(f"Loaded {len(codes)} codes from CSV")
+    # Load available code families
+    available_families = load_codes_by_family()
+    
+    if not available_families:
+        print("No code families found in data folder!")
+        return None
+    
+    # Interactive selection
+    selected_codes = select_codes_to_process(available_families)
+    
+    if not selected_codes:
+        print("No codes selected for processing.")
+        return None
+    
+    print(f"\nProcessing {len(selected_codes)} selected codes...")
     
     # Process using parallel HAL
-    results = process_codes_parallel(codes)
+    results = process_codes_parallel(selected_codes)
     
     # Create enhanced visualization
     if results:
@@ -194,10 +269,10 @@ def main():
             }
         }
         
-        with open('parallel_processing_summary.json', 'w') as f:
+        with open('results/parallel_processing_summary.json', 'w') as f:
             json.dump(summary, f, indent=2)
         
-        print(f"Comprehensive summary saved to parallel_processing_summary.json")
+        print(f"Comprehensive summary saved to results/parallel_processing_summary.json")
     
     return results
 

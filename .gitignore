@@ -142,3 +142,6 @@ Thumbs.db
 .claude/
 *.pdf
 CLAUDE.md
+
+# Results folder - generated analysis outputs
+results/

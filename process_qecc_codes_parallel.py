@@ -93,7 +93,7 @@ def select_codes_to_process(available_families):
             continue
 
 
-def process_codes_parallel(codes, n_processes=5, output_file='results/qecc_results_parallel.json'):
+def process_codes_parallel(codes, n_processes=None, output_file='results/qecc_results_parallel.json'):
     """Process all codes using parallel HAL processing."""
     
     print(f"Starting parallel processing of {len(codes)} codes...")
@@ -247,10 +247,25 @@ def main():
         print("No codes selected for processing.")
         return None
     
-    print(f"\nProcessing {len(selected_codes)} selected codes...")
+    # Get number of processes
+    import multiprocessing
+    max_cores = multiprocessing.cpu_count()
+    
+    while True:
+        try:
+            n_processes_input = input(f"\nNumber of parallel processes (1-{max_cores}): ").strip()
+            n_processes = int(n_processes_input)
+            if 1 <= n_processes <= max_cores:
+                break
+            else:
+                print(f"Error: Please enter a number between 1 and {max_cores}")
+        except ValueError:
+            print("Error: Please enter a valid integer")
+    
+    print(f"\nProcessing {len(selected_codes)} selected codes with {n_processes} processes...")
     
     # Process using parallel HAL
-    results = process_codes_parallel(selected_codes)
+    results = process_codes_parallel(selected_codes, n_processes=n_processes)
     
     # Create enhanced visualization
     if results:

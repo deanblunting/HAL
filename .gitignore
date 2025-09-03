@@ -143,5 +143,8 @@ Thumbs.db
 *.pdf
 CLAUDE.md
 
+# Papers folder - research papers and documentation
+papers/
+
 # Results folder - generated analysis outputs
 results/

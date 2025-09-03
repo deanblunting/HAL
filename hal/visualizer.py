@@ -279,7 +279,7 @@ class HALVisualizer:
         infrastructure_count = len(infrastructure_routes)
         
         fig.update_layout(
-            title=f"HAL Layout - {len(layout.node_positions)} logical qubits, "
+            title=f"HAL Layout - {len(layout.node_positions)} qubits, "
                   f"{logical_count} logical edges, {infrastructure_count} infrastructure routes<br>"
                   f"{len(layout.tiers)} tiers, Hardware Cost: {layout.hardware_cost:.2f}<br>"
                   f"<i>Auxiliary infrastructure routing for multi-tier superconducting methodology</i>",
@@ -361,7 +361,7 @@ class HALVisualizer:
                     opacity=0.3
                 ), row=row, col=col)
             
-            # Plot logical qubits (only on tier 0)
+            # Plot qubits (only on tier 0)
             if tier_id == 0:
                 node_x = [pos[0] for pos in layout.node_positions.values()]
                 node_y = [pos[1] for pos in layout.node_positions.values()]
@@ -475,7 +475,7 @@ class HALVisualizer:
         total_height = subplot_height * rows
         
         fig.update_layout(
-            title=f"HAL Multi-Tier Layout - {len(layout.node_positions)} logical qubits, "
+            title=f"HAL Multi-Tier Layout - {len(layout.node_positions)} qubits, "
                   f"{logical_count} logical edges, {infrastructure_count} infrastructure routes<br>"
                   f"{len(layout.tiers)} tiers, Hardware Cost: {layout.hardware_cost:.2f}<br>"
                   f"<i>Each tier shown separately for enhanced visualization clarity</i>",
@@ -546,7 +546,7 @@ class HALVisualizer:
             for y in range(grid_height + 1):
                 ax.plot([0, grid_width], [y, y], 'lightgray', alpha=0.3, linewidth=0.5)
             
-            # Plot logical qubits (only on tier 0)
+            # Plot qubits (only on tier 0)
             if tier_id == 0:
                 node_x = [pos[0] for pos in layout.node_positions.values()]
                 node_y = [pos[1] for pos in layout.node_positions.values()]
@@ -621,7 +621,7 @@ class HALVisualizer:
         logical_count = len(logical_routes)
         infrastructure_count = len(infrastructure_routes)
         
-        plt.suptitle(f'HAL Multi-Tier Layout - {len(layout.node_positions)} logical qubits, '
+        plt.suptitle(f'HAL Multi-Tier Layout - {len(layout.node_positions)} qubits, '
                     f'{logical_count} logical edges, {infrastructure_count} infrastructure routes\n'
                     f'{len(layout.tiers)} tiers, Hardware Cost: {layout.hardware_cost:.2f}',
                     fontsize=14)
@@ -725,7 +725,7 @@ class HALVisualizer:
             # Add dummy point for legend
             ax.plot([], [], [], 'lightgray', alpha=0.3, linewidth=0.5, label=f'Auxiliary Grid ({grid_width}×{grid_height})')
         
-        # Plot nodes (logical qubits)
+        # Plot nodes (qubits)
         node_x = [pos[0] for pos in layout.node_positions.values()]
         node_y = [pos[1] for pos in layout.node_positions.values()]
         node_z = [0] * len(layout.node_positions)

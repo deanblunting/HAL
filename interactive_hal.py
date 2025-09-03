@@ -88,13 +88,10 @@ def generate_code_graph(n, k, d, code_type):
     """Construct quantum code connectivity graph according to specified parameters and type."""
     
     if code_type == 1:  # BB code
-        # Determine BB code construction parameters
-        n1 = int(n**0.5)
-        n2 = (n + n1 - 1) // n1
-        a, b = 1, 1  # Simple shift parameters
-        print(f"Generating BB code with n1={n1}, n2={n2}, a={a}, b={b}...")
-        graph = create_bicycle_code_graph(n1, n2, a, b)
-        return graph, 'bicycle', {'n1': n1, 'n2': n2}
+        # Determine BB code construction parameters from [n,k,d]
+        print(f"Generating BB code with parameters [n={n}, k={k}, d={d}]...")
+        graph = create_bicycle_code_graph(n, k, d)
+        return graph, 'bicycle', {'n': n, 'k': k, 'd': d}
     
     elif code_type == 2:  # Tile code
         # Determine tile code parameters from qubit count
@@ -104,26 +101,19 @@ def generate_code_graph(n, k, d, code_type):
         tiles_x = tiles_per_side
         tiles_y = (total_tiles + tiles_per_side - 1) // tiles_per_side
         print(f"Generating tile code with {tiles_x}x{tiles_y} tiles of size {tile_size}x{tile_size}...")
-        graph = create_tile_code_graph(tiles_x, tiles_y, tile_size)
+        graph = create_tile_code_graph(n, k, d)
         return graph, 'tile', {'tiles_x': tiles_x, 'tiles_y': tiles_y, 'tile_size': tile_size}
     
     elif code_type == 3:  # Radial code
-        # Derive radial code parameters from qubit count constraint
-        # Optimize radial code parameters for target qubit count
-        best_r, best_s = 2, max(1, n // 8)
-        for r in range(2, int(n**0.33) + 2):
-            s = n // (2 * r * r)
-            if s >= 1 and abs(2 * r * r * s - n) < abs(2 * best_r * best_r * best_s - n):
-                best_r, best_s = r, s
-        print(f"Generating radial code with r={best_r}, s={best_s} (n≈{2*best_r*best_r*best_s})...")
-        graph = create_radial_code_graph(best_r, best_s)
-        return graph, 'radial', {'r': best_r, 's': best_s}
+        # Generate radial code from [n,k,d] parameters
+        print(f"Generating radial code with parameters [n={n}, k={k}, d={d}]...")
+        graph = create_radial_code_graph(n, k, d)
+        return graph, 'radial', {'n': n, 'k': k, 'd': d}
     
     elif code_type == 4:  # Custom hypergraph code
-        avg_degree = min(6, n // 2)  # Reasonable default
-        print(f"Generating hypergraph code with average degree {avg_degree}...")
-        graph = create_hypergraph_code_graph(n, avg_degree, 'structured')
-        return graph, 'hypergraph', {}
+        print(f"Generating hypergraph code with parameters [n={n}, k={k}, d={d}]...")
+        graph = create_hypergraph_code_graph(n, k, 'structured')
+        return graph, 'hypergraph', {'n': n, 'k': k, 'd': d}
 
 
 def configure_hal():

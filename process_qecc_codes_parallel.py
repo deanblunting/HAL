@@ -13,8 +13,8 @@ from datetime import datetime
 from hal.parallel import ParallelHAL, create_qecc_graph_from_info
 
 
-def load_codes_by_family(data_folder='data'):
-    """Load QECC codes from separate CSV files in data folder."""
+def get_available_code_families(data_folder='data'):
+    """Check which QECC code family CSV files are available without loading them."""
     import os
     
     code_files = {
@@ -27,6 +27,69 @@ def load_codes_by_family(data_folder='data'):
     
     for family, csv_path in code_files.items():
         if os.path.exists(csv_path):
+            # Just count rows without loading all data
+            df = pd.read_csv(csv_path, usecols=[0])  # Only read first column to count
+            available_families[family] = {
+                'path': csv_path,
+                'count': len(df)
+            }
+            print(f"Available: {len(df)} {family} codes")
+        else:
+            print(f"Warning: {csv_path} not found, skipping {family} codes")
+    
+    return available_families
+
+
+def select_code_families_to_process(available_families):
+    """Interactive selection of which code families to process."""
+    print("\nAvailable code families:")
+    family_names = list(available_families.keys())
+    
+    for i, family in enumerate(family_names, 1):
+        print(f"  {i}. {family} ({available_families[family]['count']} codes)")
+    
+    print(f"  {len(family_names)+1}. All families")
+    
+    while True:
+        try:
+            choice = input("\nSelect families to process (comma-separated numbers or 'all'): ").strip().lower()
+            
+            if choice == 'all' or choice == str(len(family_names)+1):
+                return list(available_families.keys())
+            
+            # Parse comma-separated choices
+            choices = [int(x.strip()) for x in choice.split(',')]
+            selected_families = []
+            
+            for choice_num in choices:
+                if 1 <= choice_num <= len(family_names):
+                    family = family_names[choice_num - 1]
+                    selected_families.append(family)
+                else:
+                    print(f"Invalid choice: {choice_num}")
+                    continue
+            
+            if selected_families:
+                total_codes = sum(available_families[family]['count'] for family in selected_families)
+                print(f"\nSelected {total_codes} codes from families: {', '.join(selected_families)}")
+                return selected_families
+            else:
+                print("No valid selections made. Please try again.")
+                
+        except (ValueError, KeyboardInterrupt):
+            print("Invalid input. Please enter comma-separated numbers or 'all'.")
+            continue
+
+
+def load_selected_code_families(selected_families, available_families):
+    """Load QECC codes from selected CSV files only."""
+    selected_codes = []
+    
+    for family in selected_families:
+        if family in available_families:
+            csv_path = available_families[family]['path']
+            print(f"Loading {family} codes from {csv_path}...")
+            
             df = pd.read_csv(csv_path)
             codes = []
             
@@ -39,59 +102,11 @@ def load_codes_by_family(data_folder='data'):
                     'logical_efficiency': row['k'] * row['d']**2 / row['n']
                 })
             
-            available_families[family] = codes
-            print(f"Available: {len(codes)} {family} codes")
-        else:
-            print(f"Warning: {csv_path} not found, skipping {family} codes")
+            selected_codes.extend(codes)
+            print(f"Loaded {len(codes)} {family} codes")
     
-    return available_families
-
-
-def select_codes_to_process(available_families):
-    """Interactive selection of which code families to process."""
-    print("\nAvailable code families:")
-    family_names = list(available_families.keys())
-    
-    for i, family in enumerate(family_names, 1):
-        print(f"  {i}. {family} ({len(available_families[family])} codes)")
-    
-    print(f"  {len(family_names)+1}. All families")
-    
-    while True:
-        try:
-            choice = input("\nSelect families to process (comma-separated numbers or 'all'): ").strip().lower()
-            
-            if choice == 'all' or choice == str(len(family_names)+1):
-                selected_codes = []
-                for codes in available_families.values():
-                    selected_codes.extend(codes)
-                return selected_codes
-            
-            # Parse comma-separated choices
-            choices = [int(x.strip()) for x in choice.split(',')]
-            selected_codes = []
-            selected_families = []
-            
-            for choice_num in choices:
-                if 1 <= choice_num <= len(family_names):
-                    family = family_names[choice_num - 1]
-                    selected_codes.extend(available_families[family])
-                    selected_families.append(family)
-                else:
-                    print(f"Invalid choice: {choice_num}")
-                    continue
-            
-            if selected_codes:
-                print(f"\nSelected {len(selected_codes)} codes from families: {', '.join(selected_families)}")
-                
-                
-                return selected_codes
-            else:
-                print("No valid selections made. Please try again.")
-                
-        except (ValueError, KeyboardInterrupt):
-            print("Invalid input. Please enter comma-separated numbers or 'all'.")
-            continue
+    print(f"Total codes loaded: {len(selected_codes)}")
+    return selected_codes
 
 
 def process_codes_parallel(codes, n_processes=None, output_file='results/qecc_results_parallel.json'):
@@ -234,18 +249,25 @@ def main():
     print("Parallel QECC Code Processing Pipeline")
     print("=" * 45)
     
-    # Load available code families
-    available_families = load_codes_by_family()
+    # Check available code families without loading data
+    available_families = get_available_code_families()
     
     if not available_families:
         print("No code families found in data folder!")
         return None
     
-    # Interactive selection
-    selected_codes = select_codes_to_process(available_families)
+    # Interactive selection of families
+    selected_family_names = select_code_families_to_process(available_families)
+    
+    if not selected_family_names:
+        print("No families selected for processing.")
+        return None
+    
+    # Load only the selected families
+    selected_codes = load_selected_code_families(selected_family_names, available_families)
     
     if not selected_codes:
-        print("No codes selected for processing.")
+        print("No codes loaded from selected families.")
         return None
     
     # Get number of processes

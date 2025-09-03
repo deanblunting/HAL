@@ -381,26 +381,25 @@ def create_tile_code_graph(n: int, k: int, d: int) -> nx.Graph:
                 if node != center_node:
                     G.add_edge(center_node, node)
     
-    # Add inter-tile connections based on boundary conditions
-    if boundary_type == 'open':
-        # For open boundaries, only connect adjacent internal tiles
-        # No connections that would wrap around boundaries
-        for tile_y in range(tiles_y - 1):
-            for tile_x in range(tiles_x - 1):
-                current_tile_center = tile_y * tiles_x * (tile_size * tile_size) + \
-                                    tile_x * (tile_size * tile_size) + (tile_size * tile_size) // 2
-                
-                # Connect to right tile
-                if tile_x < tiles_x - 1:
-                    right_tile_center = current_tile_center + (tile_size * tile_size)
-                    if G.has_node(current_tile_center) and G.has_node(right_tile_center):
-                        G.add_edge(current_tile_center, right_tile_center)
-                
-                # Connect to bottom tile  
-                if tile_y < tiles_y - 1:
-                    bottom_tile_center = current_tile_center + tiles_x * (tile_size * tile_size)
-                    if G.has_node(current_tile_center) and G.has_node(bottom_tile_center):
-                        G.add_edge(current_tile_center, bottom_tile_center)
+    # Add inter-tile connections with open boundaries (as specified in HAL paper)
+    # For open boundaries, only connect adjacent internal tiles
+    # No connections that would wrap around boundaries
+    for tile_y in range(tiles_y - 1):
+        for tile_x in range(tiles_x - 1):
+            current_tile_center = tile_y * tiles_x * (tile_size * tile_size) + \
+                                tile_x * (tile_size * tile_size) + (tile_size * tile_size) // 2
+            
+            # Connect to right tile
+            if tile_x < tiles_x - 1:
+                right_tile_center = current_tile_center + (tile_size * tile_size)
+                if G.has_node(current_tile_center) and G.has_node(right_tile_center):
+                    G.add_edge(current_tile_center, right_tile_center)
+            
+            # Connect to bottom tile  
+            if tile_y < tiles_y - 1:
+                bottom_tile_center = current_tile_center + tiles_x * (tile_size * tile_size)
+                if G.has_node(current_tile_center) and G.has_node(bottom_tile_center):
+                    G.add_edge(current_tile_center, bottom_tile_center)
     
     return G
 

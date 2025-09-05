@@ -121,7 +121,7 @@ class HALVisualizer:
         fig.add_trace(go.Scatter3d(
             x=node_x, y=node_y, z=node_z,
             mode='markers+text',
-            marker=dict(size=8, color='red', symbol='circle'),
+            marker=dict(size=8, color='blue', symbol='circle'),
             text=node_ids,
             textposition="middle center",
             name="Logical Qubits (Tier 0)"
@@ -197,6 +197,7 @@ class HALVisualizer:
                     ))
             
             # Show the grid-based routing path
+            # Plot the main path
             fig.add_trace(go.Scatter3d(
                 x=path_x, y=path_y, z=path_z,
                 mode='lines+markers',
@@ -206,12 +207,27 @@ class HALVisualizer:
                 showlegend=False,
                 opacity=opacity
             ))
+            
+            # Highlight bump bond transitions (layer changes) in green
+            for i in range(len(path) - 1):
+                current_pos = path[i]
+                next_pos = path[i + 1]
+                if current_pos[2] != next_pos[2]:  # Layer change = bump bond
+                    fig.add_trace(go.Scatter3d(
+                        x=[current_pos[0], next_pos[0]], 
+                        y=[current_pos[1], next_pos[1]], 
+                        z=[current_pos[2], next_pos[2]],
+                        mode='lines+markers',
+                        line=dict(width=line_width + 2, color='green'),
+                        marker=dict(size=4, color='green', opacity=1.0),
+                        name="Bump Bond",
+                        showlegend=False,
+                        opacity=1.0
+                    ))
         
         # Plot auxiliary infrastructure routing for multi-tier superconducting methodology
         infrastructure_colors = {
-            'control': 'green',    # Control lines
-            'readout': 'orange',   # Readout lines  
-            'tsv': 'purple',       # TSV connections
+            'tsv': 'red',       # TSV connections
             'cross_tier': 'cyan'   # Cross-tier routing
         }
         
@@ -220,13 +236,10 @@ class HALVisualizer:
             
             # Determine infrastructure type based on edge ID ranges
             if 1000 <= u < 2000:
-                infra_type = 'control'
+                infra_type = 'tsv'
                 line_style = 'dash'
             elif 2000 <= u < 4000:
-                infra_type = 'readout'
-                line_style = 'dot'
-            elif 4000 <= u < 6000:
-                infra_type = 'tsv'
+                infra_type = 'cross_tier'
                 line_style = 'dashdot'
             else:
                 infra_type = 'cross_tier'
@@ -370,7 +383,7 @@ class HALVisualizer:
                 fig.add_trace(go.Scatter(
                     x=node_x, y=node_y,
                     mode='markers+text',
-                    marker=dict(size=10, color='red', symbol='circle'),
+                    marker=dict(size=10, color='blue', symbol='circle'),
                     text=node_ids,
                     textposition="middle center",
                     name="Logical Qubits",
@@ -397,12 +410,28 @@ class HALVisualizer:
                         name=f"T{tier_id} Edge {edge[0]}-{edge[1]}",
                         showlegend=False
                     ), row=row, col=col)
+                    
+                    # Highlight bump bonds (layer changes) with green markers
+                    bump_x, bump_y = [], []
+                    for i in range(len(path) - 1):
+                        current_pos = path[i]
+                        next_pos = path[i + 1]
+                        if current_pos[2] != next_pos[2]:  # Layer change = bump bond
+                            bump_x.extend([current_pos[0], next_pos[0]])
+                            bump_y.extend([current_pos[1], next_pos[1]])
+                    
+                    if bump_x:
+                        fig.add_trace(go.Scatter(
+                            x=bump_x, y=bump_y,
+                            mode='markers',
+                            marker=dict(size=8, color='green', symbol='square'),
+                            name="Bump Bonds",
+                            showlegend=False
+                        ), row=row, col=col)
             
             # Plot infrastructure routes for this tier
             infrastructure_colors = {
-                'control': 'green',
-                'readout': 'orange',
-                'tsv': 'purple',
+                'tsv': 'red',
                 'cross_tier': 'cyan'
             }
             
@@ -418,13 +447,10 @@ class HALVisualizer:
                 
                 # Determine infrastructure type
                 if 1000 <= u < 2000:
-                    infra_type = 'control'
+                    infra_type = 'tsv'
                     line_style = 'dash'
                 elif 2000 <= u < 4000:
-                    infra_type = 'readout'
-                    line_style = 'dot'
-                elif 4000 <= u < 6000:
-                    infra_type = 'tsv'
+                    infra_type = 'cross_tier'
                     line_style = 'dashdot'
                 else:
                     infra_type = 'cross_tier'
@@ -567,12 +593,19 @@ class HALVisualizer:
                 
                 if len(path_x) > 1:
                     ax.plot(path_x, path_y, color=colors[tier_id], linewidth=2, alpha=0.8)
+                
+                # Highlight bump bonds (layer changes) with green markers
+                for i in range(len(path) - 1):
+                    current_pos = path[i]
+                    next_pos = path[i + 1]
+                    if current_pos[2] != next_pos[2]:  # Layer change = bump bond
+                        ax.scatter([current_pos[0], next_pos[0]], 
+                                  [current_pos[1], next_pos[1]], 
+                                  c='green', s=30, marker='s', alpha=1.0, zorder=10)
             
             # Plot infrastructure routes
             infrastructure_colors = {
-                'control': 'green',
-                'readout': 'orange', 
-                'tsv': 'purple',
+                'tsv': 'red',
                 'cross_tier': 'cyan'
             }
             
@@ -587,13 +620,10 @@ class HALVisualizer:
                 
                 # Determine type
                 if 1000 <= u < 2000:
-                    infra_type = 'control'
+                    infra_type = 'tsv'
                     line_style = '--'
                 elif 2000 <= u < 4000:
-                    infra_type = 'readout'
-                    line_style = ':'
-                elif 4000 <= u < 6000:
-                    infra_type = 'tsv'
+                    infra_type = 'cross_tier'
                     line_style = '-.'
                 else:
                     infra_type = 'cross_tier'
@@ -640,7 +670,7 @@ class HALVisualizer:
         fig.add_trace(go.Scatter(
             x=node_x, y=node_y,
             mode='markers+text',
-            marker=dict(size=10, color='red', symbol='circle'),
+            marker=dict(size=10, color='blue', symbol='circle'),
             text=node_ids,
             textposition="middle center",
             name="Qubits"
@@ -661,6 +691,24 @@ class HALVisualizer:
                 name=f"Edge {edge[0]}-{edge[1]}",
                 showlegend=False
             ))
+            
+            # Highlight bump bonds (layer changes) with green markers
+            bump_x, bump_y = [], []
+            for i in range(len(path) - 1):
+                current_pos = path[i]
+                next_pos = path[i + 1]
+                if current_pos[2] != next_pos[2]:  # Layer change = bump bond
+                    bump_x.extend([current_pos[0], next_pos[0]])
+                    bump_y.extend([current_pos[1], next_pos[1]])
+            
+            if bump_x:
+                fig.add_trace(go.Scatter(
+                    x=bump_x, y=bump_y,
+                    mode='markers',
+                    marker=dict(size=8, color='green', symbol='square'),
+                    name="Bump Bonds",
+                    showlegend=False
+                ))
         
         fig.update_layout(
             title=f"HAL Layout - {len(layout.node_positions)} qubits, "
@@ -730,7 +778,7 @@ class HALVisualizer:
         node_y = [pos[1] for pos in layout.node_positions.values()]
         node_z = [0] * len(layout.node_positions)
         
-        ax.scatter(node_x, node_y, node_z, c='red', s=100, label='Logical Qubits')
+        ax.scatter(node_x, node_y, node_z, c='blue', s=100, label='Logical Qubits')
         
         # Plot edges
         colors = plt.cm.tab10(np.linspace(0, 1, len(layout.tiers)))
@@ -762,6 +810,16 @@ class HALVisualizer:
             
             color = colors[tier_id % len(colors)]
             ax.plot(path_x, path_y, path_z, color=color, linewidth=linewidth, alpha=alpha)
+            
+            # Highlight bump bonds (layer changes) with green markers
+            for i in range(len(path) - 1):
+                current_pos = path[i]
+                next_pos = path[i + 1]
+                if current_pos[2] != next_pos[2]:  # Layer change = bump bond
+                    ax.scatter([current_pos[0], next_pos[0]], 
+                              [current_pos[1], next_pos[1]], 
+                              [current_pos[2], next_pos[2]], 
+                              c='green', s=50, marker='s', alpha=1.0)
         
         ax.set_title(f"HAL Layout - {len(layout.node_positions)} qubits, "
                     f"{len(layout.edge_routes)} edges, {len(layout.tiers)} tiers\n"

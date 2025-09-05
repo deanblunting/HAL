@@ -112,10 +112,10 @@ class HALVisualizer:
                 showlegend=True
             ))
         
-        # Render logical qubit positions on tier 0
+        # Render logical qubit positions on layer 1 of tier 0 (upper layer as per HAL paper)
         node_x = [pos[0] for pos in layout.node_positions.values()]
         node_y = [pos[1] for pos in layout.node_positions.values()]
-        node_z = [0] * len(layout.node_positions)
+        node_z = [1] * len(layout.node_positions)  # Layer 1 (upper layer) of tier 0
         node_ids = list(layout.node_positions.keys())
         
         fig.add_trace(go.Scatter3d(
@@ -152,7 +152,19 @@ class HALVisualizer:
                     tier_id = i
                     break
             
-            color = tier_colors[tier_id % len(tier_colors)]
+            # Color edges by layer: black for layer 0, yellow for layer 1
+            # Determine the primary layer this edge is on
+            layer_counts = {}
+            for pos in path:
+                layer = pos[2] % 2  # Layer within tier (0 or 1)
+                layer_counts[layer] = layer_counts.get(layer, 0) + 1
+            
+            # Use the layer where most of the path is
+            primary_layer = max(layer_counts, key=layer_counts.get) if layer_counts else 0
+            if primary_layer == 0:
+                color = 'black'  # Layer 0
+            else:
+                color = 'yellow'  # Layer 1
             
             path_x = [pos[0] for pos in path]
             path_y = [pos[1] for pos in path]
@@ -397,11 +409,24 @@ class HALVisualizer:
                 if edge not in tier.edges:
                     continue
                 
-                path_x = [pos[0] for pos in path if pos[2] == 0]  # Only show paths on layer 0
-                path_y = [pos[1] for pos in path if pos[2] == 0]
+                # For tier visualization, show all routing segments (they're projected to 2D anyway)
+                path_x = [pos[0] for pos in path]
+                path_y = [pos[1] for pos in path]
                 
                 if len(path_x) > 1:
-                    color = tier_colors[tier_id % len(tier_colors)]
+                    # Color edges by layer: black for layer 0, yellow for layer 1
+                    # Determine the layer this edge is primarily on
+                    layer_counts = {}
+                    for pos in path:
+                        layer = pos[2] % 2  # Layer within tier (0 or 1)
+                        layer_counts[layer] = layer_counts.get(layer, 0) + 1
+                    
+                    # Use the layer where most of the path is
+                    primary_layer = max(layer_counts, key=layer_counts.get)
+                    if primary_layer == 0:
+                        color = 'black'  # Layer 0
+                    else:
+                        color = 'yellow'  # Layer 1
                     fig.add_trace(go.Scatter(
                         x=path_x, y=path_y,
                         mode='lines+markers',
@@ -592,7 +617,12 @@ class HALVisualizer:
                 path_y = [pos[1] for pos in path if pos[2] == 0]
                 
                 if len(path_x) > 1:
-                    ax.plot(path_x, path_y, color=colors[tier_id], linewidth=2, alpha=0.8)
+                    # Color edges: black for tier 0, yellow for tier 1
+                    if tier_id == 0:
+                        edge_color = 'black'
+                    else:
+                        edge_color = 'yellow'
+                    ax.plot(path_x, path_y, color=edge_color, linewidth=2, alpha=0.8)
                 
                 # Highlight bump bonds (layer changes) with green markers
                 for i in range(len(path) - 1):
@@ -684,10 +714,15 @@ class HALVisualizer:
             path_x = [pos[0] for pos in path]
             path_y = [pos[1] for pos in path]
             
+            # Color based on layer: black for layer 0, yellow for layer 1
+            edge_color = 'black'  # Default layer 0
+            if path and any(pos[2] > 0 for pos in path):
+                edge_color = 'yellow'  # Layer 1
+            
             fig.add_trace(go.Scatter(
                 x=path_x, y=path_y,
                 mode='lines',
-                line=dict(width=2, color='blue'),
+                line=dict(width=2, color=edge_color),
                 name=f"Edge {edge[0]}-{edge[1]}",
                 showlegend=False
             ))
@@ -773,10 +808,10 @@ class HALVisualizer:
             # Add dummy point for legend
             ax.plot([], [], [], 'lightgray', alpha=0.3, linewidth=0.5, label=f'Auxiliary Grid ({grid_width}×{grid_height})')
         
-        # Plot nodes (qubits)
+        # Plot nodes (qubits) on layer 1 of tier 0 (upper layer as per HAL paper)
         node_x = [pos[0] for pos in layout.node_positions.values()]
         node_y = [pos[1] for pos in layout.node_positions.values()]
-        node_z = [0] * len(layout.node_positions)
+        node_z = [1] * len(layout.node_positions)  # Layer 1 (upper layer) of tier 0
         
         ax.scatter(node_x, node_y, node_z, c='blue', s=100, label='Logical Qubits')
         
@@ -808,7 +843,11 @@ class HALVisualizer:
                 linewidth = 1.5
                 alpha = 0.6
             
-            color = colors[tier_id % len(colors)]
+            # Color edges: black for tier 0, yellow for tier 1
+            if tier_id == 0:
+                color = 'black'
+            else:
+                color = 'yellow'
             ax.plot(path_x, path_y, path_z, color=color, linewidth=linewidth, alpha=alpha)
             
             # Highlight bump bonds (layer changes) with green markers

@@ -538,32 +538,17 @@ class PlacementEngine:
     
     def _calculate_auxiliary_grid_dimensions(self, n_logical_qubits: int) -> Tuple[int, int]:
         """
-        Calculate auxiliary grid dimensions using paper's methodology.
-        This mirrors the calculation in routing.py for consistency.
+        Return initial grid dimensions for rasterization.
+        The actual grid size emerges naturally from the placement optimization process.
+        This is just an initial canvas that gets compacted after placement.
         """
         if n_logical_qubits == 0:
             return (10, 10)
         
-        # Paper's approach: 50% efficiency target
-        target_efficiency = getattr(self.config, 'hardware_efficiency_target', 0.5)
-        target_total_positions = int(n_logical_qubits / target_efficiency)
-        
-        # Calculate dimensions for rectangular grid (like paper's 10×6)
-        grid_height = int((target_total_positions / 1.6) ** 0.5)  # Start with height
-        grid_width = int(target_total_positions / grid_height)
-        
-        # Adjust to get close to target positions
-        while grid_width * grid_height < target_total_positions:
-            grid_width += 1
-        
-        # Don't make it too much bigger than needed
-        if grid_width * grid_height > target_total_positions * 1.2:  # Max 20% over
-            if grid_width > grid_height:
-                grid_width -= 1
-            else:
-                grid_height -= 1
-        
-        return (grid_width, grid_height)
+        # Start with generous initial canvas - will be compacted after placement
+        # Paper's rasterization process determines actual space needs naturally
+        initial_size = max(10, int((n_logical_qubits) ** 0.6) + 5)
+        return (initial_size, initial_size)
 
 
 class AspectRatioAnalyzer:

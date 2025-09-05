@@ -421,7 +421,30 @@ class RoutingEngine:
                 # Planar edge routing failure requires higher-tier routing
                 remaining_edges.add(edge)
         
-        print(f"Tier 0 completion: {tier_0_routed}/{len(planar_edges)} planar edges routed")
+        # Try to route additional simple edges on Tier 0 before escalating to higher tiers
+        # Sort non-planar edges by distance and try the shortest ones first
+        non_planar_by_distance = sorted(non_planar_edges, 
+            key=lambda e: self._calculate_straight_line_distance(e, node_positions))
+        
+        additional_tier0_routed = 0
+        for edge in non_planar_by_distance:
+            # Only try very short edges that are likely to route easily
+            distance = self._calculate_straight_line_distance(edge, node_positions)
+            if distance <= 5.0:  # Only try edges with distance <= 5 grid units
+                path = self._route_planar_edge_on_qubit_tier(edge, node_positions, qubit_tier)
+                if path:
+                    edge_routes[edge] = path
+                    self._mark_path_occupied(path, qubit_tier)
+                    qubit_tier.edges.append(edge)
+                    tier_usage[0] += 1
+                    additional_tier0_routed += 1
+                    remaining_edges.discard(edge)  # Remove from remaining edges
+        
+        if additional_tier0_routed > 0:
+            print(f"Additional Tier 0 routing: {additional_tier0_routed} short edges routed")
+        
+        total_tier0_routed = tier_0_routed + additional_tier0_routed
+        print(f"Tier 0 completion: {total_tier0_routed}/{len(all_edges)} total edges routed ({tier_0_routed} planar + {additional_tier0_routed} additional)")
         print(f"Higher-tier routing required for {len(remaining_edges)} edges")
         
         # Route remaining edges using FIFO queue approach
@@ -486,8 +509,6 @@ class RoutingEngine:
         # Mark unrouted edges
         unrouted_edges = remaining_edges
         
-        # Add auxiliary infrastructure routing for multi-tier superconducting hardware
-        self._add_auxiliary_infrastructure_routing(tiers, node_positions, edge_routes)
         
         # Calculate metrics
         metrics = self._calculate_routing_metrics(edge_routes, tiers, node_positions)
@@ -500,9 +521,18 @@ class RoutingEngine:
         )
     
     def _create_tier(self, tier_id: int, node_positions: Dict[int, Tuple[int, int]]) -> RoutingTier:
-        """Create a new routing tier with auxiliary qubit grid sizing."""
-        # Calculate auxiliary qubit grid dimensions using paper's methodology
-        grid_size = self._calculate_auxiliary_qubit_grid(node_positions, tier_id)
+        """Create a new routing tier based on natural grid dimensions from placement."""
+        # Use natural grid dimensions that emerged from placement optimization
+        coords = list(node_positions.values())
+        if not coords:
+            grid_size = (10, 10, 2)
+        else:
+            max_x = max(x for x, y in coords)
+            max_y = max(y for x, y in coords)
+            # Add small margin for routing
+            grid_width = max_x + 3
+            grid_height = max_y + 3
+            grid_size = (grid_width, grid_height, 2)
         
         tier = RoutingTier(
             tier_id=tier_id,
@@ -642,25 +672,31 @@ class RoutingEngine:
         if path:
             return path
         
-        # If straight line fails, try minimal A* routing but still on layer 0 only
-        # This maintains the paper's clean tier separation
+        # If straight line fails, try A* pathfinding on layer 0 with relaxed constraints
         start_3d = (start_pos[0], start_pos[1], 0)
         end_3d = (end_pos[0], end_pos[1], 0)
         
-        # Constrain A* to layer 0 only for planar edges on qubit tier
-        path = self.pathfinder.find_path(start_3d, end_3d, tier)
+        # For short distances, be more permissive with A* routing
+        distance = self._calculate_straight_line_distance(edge, {u: start_pos, v: end_pos})
+        avoid_nodes = set()
+        
+        # For very short edges, allow some path sharing
+        if distance <= 2.0:
+            # Don't avoid any nodes for very short connections
+            path = self.pathfinder.find_path(start_3d, end_3d, tier, avoid_nodes)
+        else:
+            # For longer edges, be more strict about avoiding occupied cells
+            occupied_cells = set()
+            for x in range(tier.grid.shape[0]):
+                for y in range(tier.grid.shape[1]):
+                    if tier.is_occupied(x, y, 0):
+                        occupied_cells.add((x, y))
+            path = self.pathfinder.find_path(start_3d, end_3d, tier, occupied_cells)
+        
         if path:
             # Ensure path stays on layer 0 (qubit layer)
             layer_0_path = [(x, y, 0) for x, y, z in path]
-            # Check if this constrained path is valid
-            valid = True
-            for x, y, z in layer_0_path:
-                if tier.is_occupied(x, y, 0):
-                    valid = False
-                    break
-            
-            if valid:
-                return layer_0_path
+            return layer_0_path
         
         return None
     
@@ -825,85 +861,6 @@ class RoutingEngine:
         else:
             return 0.0
     
-    def _calculate_auxiliary_qubit_grid(self, node_positions: Dict[int, Tuple[int, int]], tier_id: int) -> Tuple[int, int, int]:
-        """
-        Calculate auxiliary qubit grid dimensions using paper's methodology.
-        
-        Paper approach: The author used a 10×6 grid (60 positions) for 30 logical qubits,
-        achieving 50% hardware efficiency. This includes auxiliary qubits for:
-        1. Control/readout routing paths
-        2. TSV access points for higher tiers  
-        3. Syndrome measurement circuits
-        4. Fabrication constraints and yield margins
-        
-        Returns:
-            (width, height, layers) grid dimensions
-        """
-        if not node_positions:
-            return (50, 50, 2)
-        
-        n_logical_qubits = len(node_positions)
-        
-        # Method 1: Hardware Efficiency Target (paper's approach)
-        # Author achieved 50% efficiency (30 logical / 60 total = 50%)
-        target_efficiency = getattr(self.config, 'hardware_efficiency_target', 0.5)
-        
-        # Calculate total positions needed for target efficiency
-        total_positions_needed = int(n_logical_qubits / target_efficiency)
-        
-        # Method 2: Routing Requirements Analysis
-        # Estimate auxiliary qubits needed based on graph connectivity
-        coords = list(node_positions.values())
-        logical_width = max(x for x, y in coords) - min(x for x, y in coords) + 1
-        logical_height = max(y for x, y in coords) - min(y for x, y in coords) + 1
-        logical_area = logical_width * logical_height
-        
-        # Add routing overhead based on connectivity density
-        avg_degree = (2 * len(node_positions)) / len(node_positions) if len(node_positions) > 0 else 2  # Assume 2 edges per node minimum
-        routing_overhead_factor = 1.0 + (avg_degree - 2) * 0.1  # 10% overhead per extra connection
-        
-        routing_positions_needed = int(logical_area * routing_overhead_factor)
-        
-        # Method 3: Fabrication Constraints
-        # Add margins for fabrication yield and process variation
-        fabrication_margin = 1.2  # 20% margin for yield
-        fabrication_positions_needed = int(n_logical_qubits * fabrication_margin)
-        
-        # Direct calculation like paper: for 30 qubits at 50% efficiency = 60 total positions
-        target_total_positions = int(n_logical_qubits / target_efficiency)
-        
-        # For 30 qubits: target_total_positions = 30 / 0.5 = 60 positions
-        # Paper used 10×6 = 60, aspect ratio = 1.67
-        
-        # Calculate dimensions for rectangular grid (like paper's 10×6)
-        # Try to match paper's aspect ratio of ~1.67 (width/height)
-        grid_height = int((target_total_positions / 1.6) ** 0.5)  # Start with height
-        grid_width = int(target_total_positions / grid_height)
-        
-        # Adjust to get close to target positions
-        while grid_width * grid_height < target_total_positions:
-            grid_width += 1
-        
-        # Don't make it too much bigger than needed
-        if grid_width * grid_height > target_total_positions * 1.2:  # Max 20% over
-            if grid_width > grid_height:
-                grid_width -= 1
-            else:
-                grid_height -= 1
-        
-        # Calculate achieved efficiency for reporting
-        achieved_efficiency = n_logical_qubits / (grid_width * grid_height)
-        auxiliary_qubits = (grid_width * grid_height) - n_logical_qubits
-        
-        if tier_id == 0:  # Only print for first tier to avoid spam
-            print(f"Auxiliary qubit grid sizing:")
-            print(f"  Logical qubits: {n_logical_qubits}")
-            print(f"  Grid dimensions: {grid_width}×{grid_height} = {grid_width * grid_height} positions")
-            print(f"  Auxiliary qubits: {auxiliary_qubits}")
-            print(f"  Hardware efficiency: {achieved_efficiency:.1%} (target: {target_efficiency:.1%})")
-            print(f"  Similar to paper's 10×6 grid for 30 qubits (50% efficiency)")
-        
-        return (grid_width, grid_height, 2)  # 2 layers per tier
     
     def _get_tier_from_z_level(self, z_level: int) -> int:
         """Get tier ID from z-level coordinate."""
@@ -964,82 +921,6 @@ class RoutingEngine:
         
         return points
     
-    def _add_auxiliary_infrastructure_routing(self, tiers: List[RoutingTier], 
-                                           node_positions: Dict[int, Tuple[int, int]], 
-                                           edge_routes: Dict) -> None:
-        """
-        Add auxiliary infrastructure routing to match author's HAL paper implementation.
-        
-        This creates the "all points connected" connectivity that the author shows,
-        including control lines, readout lines, TSV connections, and cross-tier routing paths.
-        
-        Paper approach: The auxiliary grid contains routing infrastructure that connects
-        to every position, creating the dense connectivity pattern visible in the author's
-        implementation where auxiliary qubits appear fully connected.
-        """
-        if not tiers or not node_positions:
-            return
-        
-        print(f"Adding auxiliary infrastructure routing for flip-chip geometry with bump bonds...")
-        
-        # Get the auxiliary grid dimensions from tier 0
-        tier_0 = tiers[0]
-        grid_width, grid_height = tier_0.grid.shape[0], tier_0.grid.shape[1]
-        total_positions = grid_width * grid_height
-        logical_qubits = len(node_positions)
-        auxiliary_positions = total_positions - logical_qubits
-        
-        print(f"  Auxiliary grid: {grid_width}×{grid_height} = {total_positions} total positions")
-        print(f"  Logical qubits: {logical_qubits}")
-        print(f"  Auxiliary positions: {auxiliary_positions}")
-        
-        # Add TSV connection infrastructure (connects to higher tiers)
-        tsv_routes = self._add_tsv_connection_infrastructure(tiers, node_positions)
-        
-        
-        total_infrastructure_routes = len(tsv_routes)
-        
-        print(f"  Added infrastructure routes:")
-        print(f"    TSV connections: {len(tsv_routes)}")
-        print(f"    Total infrastructure: {total_infrastructure_routes} routes")
-        
-        # Add infrastructure routes to edge_routes for visualization (using special edge IDs)
-        infrastructure_id_start = max(max(edge) for edge in edge_routes.keys()) + 1000 if edge_routes else 1000
-        
-        # Add TSV connections to visualization
-        for i, route in enumerate(tsv_routes):
-            edge_routes[(infrastructure_id_start + i, infrastructure_id_start + i + 1000)] = route
-    
-    
-    
-    def _add_tsv_connection_infrastructure(self, tiers: List[RoutingTier], 
-                                         node_positions: Dict[int, Tuple[int, int]]) -> List[List[Tuple[int, int, int]]]:
-        """
-        Add TSV connection infrastructure between tiers.
-        Creates vertical routing paths that connect different hardware layers.
-        """
-        tsv_routes = []
-        
-        if len(tiers) <= 1:
-            return tsv_routes
-        
-        # Add TSV connections at key auxiliary positions
-        grid_width, grid_height = tiers[0].grid.shape[0], tiers[0].grid.shape[1]
-        
-        # Place TSVs at regular intervals across the auxiliary grid
-        tsv_spacing_x = max(2, grid_width // 4)  # 4 TSV columns
-        tsv_spacing_y = max(2, grid_height // 3)  # 3 TSV rows
-        
-        for x in range(0, grid_width, tsv_spacing_x):
-            for y in range(0, grid_height, tsv_spacing_y):
-                # Create vertical TSV connection between tier 0 and tier 1
-                tsv_path = [
-                    (x, y, 0),  # Tier 0
-                    (x, y, 1)   # Connect to higher tier
-                ]
-                tsv_routes.append(tsv_path)
-        
-        return tsv_routes
     
     
     def _is_layer_available_for_routing(self, tier: RoutingTier, layer: int) -> bool:

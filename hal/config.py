@@ -75,8 +75,6 @@ class HALConfig:
     layer_change_cost: float = 2.0
     bump_bond_cost: float = 1.5
     
-    # Auxiliary qubit grid sizing parameters
-    hardware_efficiency_target: float = 0.5  # Target 50% efficiency like paper's 10×6 grid for 30 qubits
     
     def validate(self) -> None:
         """Validate configuration parameters."""

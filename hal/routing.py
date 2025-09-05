@@ -993,122 +993,24 @@ class RoutingEngine:
         print(f"  Logical qubits: {logical_qubits}")
         print(f"  Auxiliary positions: {auxiliary_positions}")
         
-        # 1. Add control line infrastructure (connects external electronics to each qubit)
-        control_routes = self._add_control_line_infrastructure(tier_0, node_positions)
-        
-        # 2. Add readout line infrastructure (connects each qubit to measurement electronics)
-        readout_routes = self._add_readout_line_infrastructure(tier_0, node_positions)
-        
-        # 3. Add TSV connection infrastructure (connects to higher tiers)
+        # Add TSV connection infrastructure (connects to higher tiers)
         tsv_routes = self._add_tsv_connection_infrastructure(tiers, node_positions)
         
-        # 4. Add cross-tier routing path infrastructure
-        cross_tier_routes = self._add_cross_tier_routing_infrastructure(tiers, node_positions)
         
-        total_infrastructure_routes = len(control_routes) + len(readout_routes) + len(tsv_routes) + len(cross_tier_routes)
+        total_infrastructure_routes = len(tsv_routes)
         
         print(f"  Added infrastructure routes:")
-        print(f"    Control lines: {len(control_routes)}")
-        print(f"    Readout lines: {len(readout_routes)}")
         print(f"    TSV connections: {len(tsv_routes)}")
-        print(f"    Cross-tier routes: {len(cross_tier_routes)}")
         print(f"    Total infrastructure: {total_infrastructure_routes} routes")
         
         # Add infrastructure routes to edge_routes for visualization (using special edge IDs)
         infrastructure_id_start = max(max(edge) for edge in edge_routes.keys()) + 1000 if edge_routes else 1000
         
-        # Add control lines to visualization
-        for i, route in enumerate(control_routes):
-            edge_routes[(infrastructure_id_start + i, infrastructure_id_start + i + 1000)] = route
-        
-        # Add readout lines to visualization  
-        for i, route in enumerate(readout_routes):
-            edge_routes[(infrastructure_id_start + 2000 + i, infrastructure_id_start + 3000 + i)] = route
-        
         # Add TSV connections to visualization
         for i, route in enumerate(tsv_routes):
-            edge_routes[(infrastructure_id_start + 4000 + i, infrastructure_id_start + 5000 + i)] = route
-        
-        # Add cross-tier routes to visualization
-        for i, route in enumerate(cross_tier_routes):
-            edge_routes[(infrastructure_id_start + 6000 + i, infrastructure_id_start + 7000 + i)] = route
+            edge_routes[(infrastructure_id_start + i, infrastructure_id_start + i + 1000)] = route
     
-    def _add_control_line_infrastructure(self, tier: RoutingTier, 
-                                       node_positions: Dict[int, Tuple[int, int]]) -> List[List[Tuple[int, int, int]]]:
-        """
-        Add control line routing from external electronics to each qubit position.
-        This creates the dense auxiliary grid connectivity pattern required for multi-tier superconducting stackup.
-        """
-        control_routes = []
-        grid_width, grid_height = tier.grid.shape[0], tier.grid.shape[1]
-        
-        # Control lines typically come from the edge of the chip
-        control_entry_point = (0, grid_height // 2)  # Left edge, middle
-        
-        # Route control lines to each logical qubit position
-        for node, (x, y) in node_positions.items():
-            # Simple L-shaped routing from control entry point to qubit
-            control_path = []
-            
-            # Horizontal segment
-            if control_entry_point[0] != x:
-                for cx in range(control_entry_point[0], x + 1):
-                    control_path.append((cx, control_entry_point[1], 0))
-            
-            # Vertical segment
-            if control_entry_point[1] != y:
-                start_y = control_entry_point[1]
-                end_y = y
-                if start_y > end_y:
-                    start_y, end_y = end_y, start_y
-                for cy in range(start_y, end_y + 1):
-                    if (x, cy, 0) not in control_path:
-                        control_path.append((x, cy, 0))
-            
-            # Ensure endpoint is included
-            if (x, y, 0) not in control_path:
-                control_path.append((x, y, 0))
-            
-            if len(control_path) > 1:
-                control_routes.append(control_path)
-        
-        return control_routes
     
-    def _add_readout_line_infrastructure(self, tier: RoutingTier, 
-                                       node_positions: Dict[int, Tuple[int, int]]) -> List[List[Tuple[int, int, int]]]:
-        """
-        Add readout line routing from each qubit to measurement electronics.
-        This creates additional connectivity infrastructure.
-        """
-        readout_routes = []
-        grid_width, grid_height = tier.grid.shape[0], tier.grid.shape[1]
-        
-        # Readout lines typically go to the opposite edge from control
-        readout_exit_point = (grid_width - 1, grid_height // 2)  # Right edge, middle
-        
-        # Route readout lines from each logical qubit position
-        for node, (x, y) in node_positions.items():
-            # Simple L-shaped routing from qubit to readout exit point
-            readout_path = [(x, y, 0)]  # Start at qubit
-            
-            # Vertical segment first
-            if y != readout_exit_point[1]:
-                start_y = y
-                end_y = readout_exit_point[1]
-                if start_y > end_y:
-                    start_y, end_y = end_y, start_y
-                for cy in range(start_y + 1, end_y + 1):
-                    readout_path.append((x, cy, 0))
-            
-            # Horizontal segment
-            if x != readout_exit_point[0]:
-                for cx in range(x + 1, readout_exit_point[0] + 1):
-                    readout_path.append((cx, readout_exit_point[1], 0))
-            
-            if len(readout_path) > 1:
-                readout_routes.append(readout_path)
-        
-        return readout_routes
     
     def _add_tsv_connection_infrastructure(self, tiers: List[RoutingTier], 
                                          node_positions: Dict[int, Tuple[int, int]]) -> List[List[Tuple[int, int, int]]]:
@@ -1139,43 +1041,6 @@ class RoutingEngine:
         
         return tsv_routes
     
-    def _add_cross_tier_routing_infrastructure(self, tiers: List[RoutingTier], 
-                                             node_positions: Dict[int, Tuple[int, int]]) -> List[List[Tuple[int, int, int]]]:
-        """
-        Add cross-tier routing path infrastructure.
-        Creates routing paths that span multiple tiers for complex interconnections.
-        """
-        cross_tier_routes = []
-        
-        if len(tiers) <= 1:
-            return cross_tier_routes
-        
-        grid_width, grid_height = tiers[0].grid.shape[0], tiers[0].grid.shape[1]
-        
-        # Add some cross-tier routing paths at auxiliary positions
-        # These create the complex auxiliary grid infrastructure required for multi-layer superconducting quantum architecture
-        
-        # Add horizontal cross-tier buses
-        for y in range(1, grid_height, 3):  # Every 3rd row
-            cross_tier_path = []
-            # Create a path that spans the width and connects tiers
-            for x in range(0, grid_width, 2):  # Every other column
-                cross_tier_path.append((x, y, 0))
-            
-            if len(cross_tier_path) > 1:
-                cross_tier_routes.append(cross_tier_path)
-        
-        # Add vertical cross-tier buses
-        for x in range(1, grid_width, 3):  # Every 3rd column
-            cross_tier_path = []
-            # Create a path that spans the height
-            for y in range(0, grid_height, 2):  # Every other row
-                cross_tier_path.append((x, y, 0))
-            
-            if len(cross_tier_path) > 1:
-                cross_tier_routes.append(cross_tier_path)
-        
-        return cross_tier_routes
     
     def _is_layer_available_for_routing(self, tier: RoutingTier, layer: int) -> bool:
         """Check if layer has sufficient capacity for additional routing."""

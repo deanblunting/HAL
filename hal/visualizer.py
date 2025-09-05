@@ -100,18 +100,22 @@ class HALVisualizer:
                 path_y = [pos[1] for pos in path]
                 
                 if len(path_x) > 1:
-                    # Color edges by layer: black for layer 0, yellow for layer 1
-                    layer_counts = {}
-                    for pos in path:
-                        layer = pos[2] % 2  # Layer within tier (0 or 1)
-                        layer_counts[layer] = layer_counts.get(layer, 0) + 1
-                    
-                    # Use the layer where most of the path is
-                    primary_layer = max(layer_counts, key=layer_counts.get) if layer_counts else 0
-                    if primary_layer == 0:
-                        edge_color = 'black'  # Layer 0
+                    # Color logic: Tier 0 always black, higher tiers use layer-based colors
+                    if tier_id == 0:
+                        edge_color = 'black'  # All Tier 0 routes are black
                     else:
-                        edge_color = 'yellow'  # Layer 1
+                        # Higher tiers: black for layer 0, yellow for layer 1
+                        layer_counts = {}
+                        for pos in path:
+                            layer = pos[2] % 2  # Layer within tier (0 or 1)
+                            layer_counts[layer] = layer_counts.get(layer, 0) + 1
+                        
+                        # Use the layer where most of the path is
+                        primary_layer = max(layer_counts, key=layer_counts.get) if layer_counts else 0
+                        if primary_layer == 0:
+                            edge_color = 'black'  # Layer 0
+                        else:
+                            edge_color = 'yellow'  # Layer 1
                     
                     ax.plot(path_x, path_y, color=edge_color, linewidth=2, alpha=0.8)
                 
@@ -162,18 +166,8 @@ class HALVisualizer:
             path_x = [pos[0] for pos in path]
             path_y = [pos[1] for pos in path]
             
-            # Color edges by layer: black for layer 0, yellow for layer 1
-            layer_counts = {}
-            for pos in path:
-                layer = pos[2] % 2  # Layer within tier (0 or 1)
-                layer_counts[layer] = layer_counts.get(layer, 0) + 1
-            
-            # Use the layer where most of the path is
-            primary_layer = max(layer_counts, key=layer_counts.get) if layer_counts else 0
-            if primary_layer == 0:
-                edge_color = 'black'  # Layer 0
-            else:
-                edge_color = 'yellow'  # Layer 1
+            # For single tier layout (always tier 0), use black for all edges
+            edge_color = 'black'  # All qubit tier routes are black
             
             plt.plot(path_x, path_y, color=edge_color, linewidth=2, alpha=0.8)
             

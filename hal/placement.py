@@ -31,13 +31,16 @@ class SpringLayout:
         if n == 1:
             return {nodes[0]: (0.0, 0.0)}
         
-        # Compute all-pairs shortest path distances
-        distances = self.analyzer.compute_all_pairs_shortest_paths()
-        
         # Construct planar subgraph for distance computation
         planar_graph = nx.Graph()
         planar_graph.add_nodes_from(self.graph.nodes())
-        planar_graph.add_edges_from(planar_subgraph_edges)
+        planar_graph.add_edges_from(planar_subgraph_edges or [])
+        
+        # Compute distances on planar subgraph if provided, otherwise use full graph
+        if planar_subgraph_edges:
+            distances = dict(nx.all_pairs_shortest_path_length(planar_graph))
+        else:
+            distances = self.analyzer.compute_all_pairs_shortest_paths()
         
         # Calculate spring constant parameter for distance scaling
         if self.config.spring_layout_k is None:
@@ -476,10 +479,21 @@ class PlacementEngine:
             PlacementResult containing node positions and metadata
         """
         if custom_positions:
-            # Use custom positions directly
-            node_positions = custom_positions.copy()
-            planar_edges = set(graph.edges())  # Assume all edges can be planar with custom positions
-            communities = {node: 0 for node in graph.nodes()}  # Single community
+            # Always rasterize and compact custom positions as per HAL paper spec
+            snapped = self.rasterizer.rasterize_positions(custom_positions)
+            node_positions = self.rasterizer.compact_grid(snapped)
+            
+            # Run normal MPS extraction on the given graph
+            # Step 1: Community detection for edge prioritization
+            community_detector = CommunityDetector(graph, self.config)
+            communities = community_detector.detect_communities()
+            
+            # Step 2: Extract planar subgraph using position-dependent edge priorities
+            analyzer = GraphAnalyzer(graph)
+            edge_priorities = analyzer.get_edge_priorities(communities, node_positions)
+            
+            planarity_tester = PlanarityTester(graph)
+            planar_edges = planarity_tester.get_planar_subgraph(edge_priorities)
         else:
             # Use algorithmic placement
             node_positions, planar_edges, communities = self._algorithmic_placement(graph)

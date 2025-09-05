@@ -81,8 +81,8 @@ class AStarPathfinder:
                 if (nx, ny) in avoid_nodes:
                     continue
                 
-                # Smart occupancy checking with some permissiveness for tier 0
-                if self._is_position_blocked(tier, nx, ny, nl, current):
+                # Strict occupancy checking - HAL paper: no path intersections allowed
+                if tier.is_occupied(nx, ny, nl):
                     continue
                 
                 # Compute transition cost between positions
@@ -154,26 +154,16 @@ class AStarPathfinder:
     
     def _is_position_blocked(self, tier: RoutingTier, x: int, y: int, layer: int, 
                             current_pos: Tuple[int, int, int]) -> bool:
-        """Enhanced position blocking check with context-aware collision detection."""
+        """Strict position blocking check - HAL paper: 'edges on the same layer cannot cross'."""
         # Basic bounds check
         if (x < 0 or x >= tier.grid.shape[0] or 
             y < 0 or y >= tier.grid.shape[1] or
             layer < 0 or layer >= tier.grid.shape[2]):
             return True
         
-        # For tier 0, allow some controlled path sharing to improve routing success
-        if tier.tier_id == 0:
-            if tier.is_occupied(x, y, layer):
-                # Allow limited sharing for short hops
-                current_distance = abs(current_pos[0] - x) + abs(current_pos[1] - y)
-                if current_distance <= 1:  # Adjacent cells can share occasionally
-                    return False  # Allow this position
-                return True  # Block longer paths through occupied cells
-        else:
-            # Higher tiers: strict collision avoidance
-            return tier.is_occupied(x, y, layer)
-        
-        return False
+        # HAL paper requirement: strict planarity enforcement
+        # ANY occupied cell blocks the path - no exceptions for path sharing
+        return tier.is_occupied(x, y, layer)
 
 
 class StraightLineRouter:
@@ -202,21 +192,16 @@ class StraightLineRouter:
         # Apply Bresenham line rasterization algorithm
         line_points = self._bresenham_line(x1, y1, x2, y2)
         
-        # HAL paper collision detection: "edges on the same layer cannot cross"
-        # "The router scans the MPS edges once and paints the corresponding grid cells 
-        # along the straight line between their endpoints"
+        # HAL paper: "The router scans the MPS edges once and paints the corresponding 
+        # grid cells along the straight line between their endpoints"
+        # Check EVERY cell the path would occupy for conflicts
         
-        if tier.tier_id == 0:
-            # Tier 0: Strict planarity enforcement - no crossing edges allowed
-            for x, y in line_points:
-                if tier.is_occupied(x, y, layer):
-                    # HAL paper: if path is obstructed, try bump transition or higher tier
-                    return None  # Path would cross existing routes - not allowed on tier 0
-        else:
-            # Higher tiers: Also enforce strict collision avoidance 
-            for x, y in line_points:
-                if tier.is_occupied(x, y, layer):
-                    return None
+        for x, y in line_points:
+            if tier.is_occupied(x, y, layer):
+                # HAL paper: "edges on the same layer cannot cross"
+                return None  # Path would intersect existing route - blocked
+        
+        # If we get here, entire path is clear of conflicts
         
         # Transform to 3D coordinate representation
         path = [(x, y, layer) for x, y in line_points]
@@ -256,6 +241,46 @@ class StraightLineRouter:
             points.append((x2, y2))
         
         return points
+    
+    def route_straight_with_bumps(self, start: Tuple[int, int], end: Tuple[int, int], 
+                                 tier: RoutingTier, start_layer: int = 1, 
+                                 max_bump_transitions: int = 10) -> Optional[List[Tuple[int, int, int]]]:
+        """
+        Route straight line with bump transitions when blocked.
+        
+        ChatGPT Pro recommendation: traverse discrete straight line, flip to other layer
+        when blocked at that cell exactly once, continue straight without flipping back
+        unless hitting next obstruction.
+        """
+        x1, y1 = start
+        x2, y2 = end
+        
+        # Get straight line points using Bresenham
+        line_points = self._bresenham_line(x1, y1, x2, y2)
+        
+        path_3d = []
+        current_layer = start_layer
+        bump_count = 0
+        other_layer = 1 - start_layer  # Toggle between 0 and 1
+        
+        for x, y in line_points:
+            # Check if current layer at this position is blocked
+            if tier.is_occupied(x, y, current_layer):
+                # Try switching to other layer at this exact cell
+                if not tier.is_occupied(x, y, other_layer) and bump_count < max_bump_transitions:
+                    # Switch layers (bump transition)
+                    current_layer = other_layer
+                    other_layer = 1 - current_layer  # Update other layer
+                    bump_count += 1
+                    path_3d.append((x, y, current_layer))
+                else:
+                    # Both layers blocked or max bumps exceeded - route fails
+                    return None
+            else:
+                # Current layer is free - continue on same layer
+                path_3d.append((x, y, current_layer))
+        
+        return path_3d
     
     def _is_critical_position(self, x: int, y: int, tier: RoutingTier) -> bool:
         """Check if position is critical (like a node position) that should avoid conflicts."""
@@ -713,46 +738,28 @@ class RoutingEngine:
         start_pos = node_positions[u]
         end_pos = node_positions[v]
         
-        # Try straight-line routing on layer 1 first (where qubits are placed)
-        path = self.straight_router.route_straight_line(start_pos, end_pos, tier, layer=1)
+        # HAL paper: Only straight-line routing allowed on qubit tier (Tier 0)
+        # No A* pathfinding - if straight line fails, escalate to higher tiers
+        
+        # Try straight-line routing with bump transitions ONLY on layer 1 (where qubits are)
+        # DO NOT route on layer 0 of qubit tier since qubits are on layer 1
+        path = self.straight_router.route_straight_with_bumps(
+            start_pos, end_pos, tier, start_layer=1, 
+            max_bump_transitions=self.config.max_bump_transitions
+        )
         if path:
+            print(f"Successfully routed edge {edge} on Tier 0 with {len(path)} path points")
             return path
         
-        # If blocked on qubit layer, try layer 0 as fallback (HAL paper's "opposing layer")
-        path = self.straight_router.route_straight_line(start_pos, end_pos, tier, layer=0)
-        if path:
-            # Need bump transitions to connect from layer 1 (qubits) to layer 0 and back
-            return self._create_path_with_layer_transitions(start_pos, end_pos, path, 0)
-        
-        # If straight line fails on both layers, try A* pathfinding using both layers
-        # Start and end on layer 1 (where qubits are)
-        start_3d = (start_pos[0], start_pos[1], 1)
-        end_3d = (end_pos[0], end_pos[1], 1)
-        
-        path = self.pathfinder.find_path(start_3d, end_3d, tier)
-        if path:
-            return path
-        
-        # Fallback: try starting from layer 0
-        start_3d = (start_pos[0], start_pos[1], 0)
-        end_3d = (end_pos[0], end_pos[1], 0)
-        
-        path = self.pathfinder.find_path(start_3d, end_3d, tier)
-        if path:
-            return path
-        
+        # If straight-line with bumps fails on qubit tier, escalate to higher tiers
+        print(f"Failed to route edge {edge} on Tier 0, escalating to higher tier")
         return None
     
     def _mark_path_occupied(self, path: List[Tuple[int, int, int]], tier: RoutingTier):
-        """Mark path cells as occupied in tier grid with realistic congestion modeling."""
-        for i, (x, y, layer) in enumerate(path):
-            if tier.tier_id == 0:
-                # Tier 0: Mark all cells but with weighted occupancy for congestion modeling
-                # This creates realistic routing conflicts as the tier fills up
-                tier.set_occupied(x, y, layer, True)
-            else:
-                # Higher tiers: Use strict occupancy to prevent conflicts
-                tier.set_occupied(x, y, layer, True)
+        """Mark path cells as occupied - strict binary occupancy for all tiers."""
+        for x, y, layer in path:
+            # HAL paper: strict binary occupancy - cell is either free or blocked
+            tier.set_occupied(x, y, layer, True)
     
     def _is_tier_congested(self, tier: RoutingTier) -> bool:
         """Check if tier is too congested for more routing."""

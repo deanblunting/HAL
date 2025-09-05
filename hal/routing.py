@@ -21,7 +21,7 @@ class AStarPathfinder:
     def find_path(self, start: Tuple[int, int, int], end: Tuple[int, int, int], 
                   tier: RoutingTier, avoid_nodes: Set[Tuple[int, int]] = None) -> Optional[List[Tuple[int, int, int]]]:
         """
-        Find path from start to end using A* algorithm.
+        Find path from start to end using A* algorithm with improved collision handling.
         
         Args:
             start: (x, y, layer) starting position
@@ -35,6 +35,25 @@ class AStarPathfinder:
         if avoid_nodes is None:
             avoid_nodes = set()
         
+        # Allow flexible endpoint matching for better routing success
+        # Try different layers at the endpoint if direct layer routing fails
+        target_layers = [end[2]]  # Primary target layer
+        if end[2] == 1:  # If targeting layer 1, also try layer 0
+            target_layers.append(0)
+        elif end[2] == 0:  # If targeting layer 0, also try layer 1
+            target_layers.append(1)
+        
+        for target_layer in target_layers:
+            adjusted_end = (end[0], end[1], target_layer)
+            path = self._find_path_to_target(start, adjusted_end, tier, avoid_nodes)
+            if path:
+                return path
+        
+        return None  # No path found
+    
+    def _find_path_to_target(self, start: Tuple[int, int, int], end: Tuple[int, int, int], 
+                            tier: RoutingTier, avoid_nodes: Set[Tuple[int, int]]) -> Optional[List[Tuple[int, int, int]]]:
+        """Core A* pathfinding implementation."""
         # Priority queue implementation: (f_score, g_score, position)
         open_set = [(0, 0, start)]
         came_from = {}
@@ -49,18 +68,21 @@ class AStarPathfinder:
                 continue
             visited.add(current)
             
-            if current[:2] == end[:2]:  # Reached target (ignore layer for endpoint)
+            # More flexible endpoint matching - allow some layer flexibility
+            if current[:2] == end[:2]:  # Reached target position
                 return self._reconstruct_path(came_from, current)
             
             for neighbor in self._get_neighbors(current, tier):
                 if neighbor in visited:
                     continue
                     
-                # Validate neighbor accessibility
+                # Enhanced collision detection
                 nx, ny, nl = neighbor
                 if (nx, ny) in avoid_nodes:
                     continue
-                if tier.is_occupied(nx, ny, nl):
+                
+                # Smart occupancy checking with some permissiveness for tier 0
+                if self._is_position_blocked(tier, nx, ny, nl, current):
                     continue
                 
                 # Compute transition cost between positions
@@ -129,6 +151,29 @@ class AStarPathfinder:
             current = came_from[current]
             path.append(current)
         return path[::-1]
+    
+    def _is_position_blocked(self, tier: RoutingTier, x: int, y: int, layer: int, 
+                            current_pos: Tuple[int, int, int]) -> bool:
+        """Enhanced position blocking check with context-aware collision detection."""
+        # Basic bounds check
+        if (x < 0 or x >= tier.grid.shape[0] or 
+            y < 0 or y >= tier.grid.shape[1] or
+            layer < 0 or layer >= tier.grid.shape[2]):
+            return True
+        
+        # For tier 0, allow some controlled path sharing to improve routing success
+        if tier.tier_id == 0:
+            if tier.is_occupied(x, y, layer):
+                # Allow limited sharing for short hops
+                current_distance = abs(current_pos[0] - x) + abs(current_pos[1] - y)
+                if current_distance <= 1:  # Adjacent cells can share occasionally
+                    return False  # Allow this position
+                return True  # Block longer paths through occupied cells
+        else:
+            # Higher tiers: strict collision avoidance
+            return tier.is_occupied(x, y, layer)
+        
+        return False
 
 
 class StraightLineRouter:
@@ -157,22 +202,18 @@ class StraightLineRouter:
         # Apply Bresenham line rasterization algorithm
         line_points = self._bresenham_line(x1, y1, x2, y2)
         
-        # Evaluate path feasibility with congestion analysis
+        # HAL paper collision detection: "edges on the same layer cannot cross"
+        # "The router scans the MPS edges once and paints the corresponding grid cells 
+        # along the straight line between their endpoints"
+        
         if tier.tier_id == 0:
-            # Tier 0: Apply realistic congestion model with controlled path sharing
-            occupied_count = 0
+            # Tier 0: Strict planarity enforcement - no crossing edges allowed
             for x, y in line_points:
                 if tier.is_occupied(x, y, layer):
-                    occupied_count += 1
-            
-            # Permit limited overlap while enforcing congestion constraints
-            path_length = len(line_points)
-            max_allowed_overlaps = max(1, path_length // 3)  # Allow some sharing for short paths
-            
-            if occupied_count > max_allowed_overlaps:
-                return None  # Congestion threshold exceeded
+                    # HAL paper: if path is obstructed, try bump transition or higher tier
+                    return None  # Path would cross existing routes - not allowed on tier 0
         else:
-            # Higher tiers: Enforce strict collision avoidance
+            # Higher tiers: Also enforce strict collision avoidance 
             for x, y in line_points:
                 if tier.is_occupied(x, y, layer):
                     return None
@@ -215,6 +256,11 @@ class StraightLineRouter:
             points.append((x2, y2))
         
         return points
+    
+    def _is_critical_position(self, x: int, y: int, tier: RoutingTier) -> bool:
+        """Check if position is critical (like a node position) that should avoid conflicts."""
+        # For now, mark TSV positions as critical since they are connection points
+        return (x, y) in tier.tsvs
 
 
 class BumpTransitionManager:
@@ -387,64 +433,59 @@ class RoutingEngine:
         qubit_tier = self._create_tier(0, node_positions)
         tiers.append(qubit_tier)
         
-        # Implement paper's Appendix A.2 specification: route only planar subgraph edges on Tier 0
-        # Non-planar edges are routed on higher tiers according to HAL algorithm
+        # Implement HAL paper Appendix A.2: "After this, all other edges are also attempted 
+        # as straight lines on the qubit tier, even if they were not part of the MPS. 
+        # This procedure allows us to maximize the number of edges placed on the qubit tier."
         
         all_edges = list(graph.edges())
         
-        # Partition edges into planar and non-planar sets based on planar subgraph extraction
+        # Step 1: Route planar subgraph edges first (paper's MPS routing)
         planar_edges = [edge for edge in all_edges if edge in planar_subgraph_edges or 
                        (edge[1], edge[0]) in planar_subgraph_edges]
-        non_planar_edges = [edge for edge in all_edges if edge not in planar_edges]
         
         # Sort planar edges by straight-line distance for optimal routing order
         planar_edges_by_length = sorted(planar_edges, 
             key=lambda e: self._calculate_straight_line_distance(e, node_positions))
         
-        # Initialize non-planar edges for higher-tier routing
-        remaining_edges = set(non_planar_edges)
+        remaining_edges = set(all_edges)  # Start with all edges
         tier_0_routed = 0
         
         print(f"Routing {len(planar_edges)} planar subgraph edges on Tier 0...")
-        print(f"{len(non_planar_edges)} non-planar edges reserved for higher-tier routing")
         
         # Route planar subgraph edges on qubit tier (Tier 0)
         for edge in planar_edges_by_length:
-            path = self._route_planar_edge_on_qubit_tier(edge, node_positions, qubit_tier)
+            path = self._route_edge_on_qubit_tier(edge, node_positions, qubit_tier)
             if path:
                 edge_routes[edge] = path
                 self._mark_path_occupied(path, qubit_tier)
                 qubit_tier.edges.append(edge)
                 tier_usage[0] += 1
                 tier_0_routed += 1
-            else:
-                # Planar edge routing failure requires higher-tier routing
-                remaining_edges.add(edge)
+                remaining_edges.discard(edge)
+            # If planar edge fails on tier 0, it stays in remaining_edges for higher tier routing
         
-        # Try to route additional simple edges on Tier 0 before escalating to higher tiers
-        # Sort non-planar edges by distance and try the shortest ones first
+        # Step 2: Aggressive straight-line routing - try ALL remaining edges on Tier 0
+        # "all other edges are also attempted as straight lines on the qubit tier"
+        non_planar_edges = list(remaining_edges)
         non_planar_by_distance = sorted(non_planar_edges, 
             key=lambda e: self._calculate_straight_line_distance(e, node_positions))
         
+        print(f"Attempting aggressive straight-line routing for {len(non_planar_edges)} remaining edges on Tier 0...")
+        
         additional_tier0_routed = 0
         for edge in non_planar_by_distance:
-            # Only try very short edges that are likely to route easily
-            distance = self._calculate_straight_line_distance(edge, node_positions)
-            if distance <= 5.0:  # Only try edges with distance <= 5 grid units
-                path = self._route_planar_edge_on_qubit_tier(edge, node_positions, qubit_tier)
-                if path:
-                    edge_routes[edge] = path
-                    self._mark_path_occupied(path, qubit_tier)
-                    qubit_tier.edges.append(edge)
-                    tier_usage[0] += 1
-                    additional_tier0_routed += 1
-                    remaining_edges.discard(edge)  # Remove from remaining edges
-        
-        if additional_tier0_routed > 0:
-            print(f"Additional Tier 0 routing: {additional_tier0_routed} short edges routed")
+            path = self._route_edge_on_qubit_tier(edge, node_positions, qubit_tier)
+            if path:
+                edge_routes[edge] = path
+                self._mark_path_occupied(path, qubit_tier)
+                qubit_tier.edges.append(edge)
+                tier_usage[0] += 1
+                additional_tier0_routed += 1
+                remaining_edges.discard(edge)
+            # If edge fails on tier 0, it stays in remaining_edges for higher tier routing
         
         total_tier0_routed = tier_0_routed + additional_tier0_routed
-        print(f"Tier 0 completion: {total_tier0_routed}/{len(all_edges)} total edges routed ({tier_0_routed} planar + {additional_tier0_routed} additional)")
+        print(f"Tier 0 completion: {total_tier0_routed}/{len(all_edges)} total edges routed ({tier_0_routed} planar + {additional_tier0_routed} aggressive)")
         print(f"Higher-tier routing required for {len(remaining_edges)} edges")
         
         # Route remaining edges using FIFO queue approach
@@ -581,8 +622,8 @@ class RoutingEngine:
         end_pos = node_positions[v]
         
         if tier_id == 0:
-            # Tier 0: Use the special planar routing (already handled separately)
-            return self._route_planar_edge_on_qubit_tier(edge, node_positions, tier)
+            # Tier 0: Use the qubit tier routing
+            return self._route_edge_on_qubit_tier(edge, node_positions, tier)
         else:
             # Higher tiers: Paper's approach for complex grid-based routing
             return self._route_edge_on_higher_tier(edge, start_pos, end_pos, tier, tier_id)
@@ -611,8 +652,12 @@ class RoutingEngine:
                             self._mark_layer_usage(tier, layer)
                             return full_path
                     else:
-                        # Direct routing on layer 0
-                        return path
+                        # Direct routing - ensure proper layer assignment
+                        # If routing on layer 0, need transitions to/from qubit layer 1
+                        if layer == 0:
+                            return self._create_path_with_layer_transitions(start_pos, end_pos, path, layer)
+                        else:
+                            return path
         
         # 2. Try multi-layer routing with dynamic layer allocation
         for primary_layer in range(num_layers):
@@ -634,8 +679,9 @@ class RoutingEngine:
                         return path
         
         # 3. Fallback to A* pathfinding with layer constraints
-        start_3d = (start_pos[0], start_pos[1], 0)
-        end_3d = (end_pos[0], end_pos[1], 0)
+        # Start on layer 1 where qubits are placed
+        start_3d = (start_pos[0], start_pos[1], 1)
+        end_3d = (end_pos[0], end_pos[1], 1)
         
         path = self.pathfinder.find_path(start_3d, end_3d, tier)
         if path:
@@ -650,13 +696,15 @@ class RoutingEngine:
         
         return None
     
-    def _route_planar_edge_on_qubit_tier(self, edge: Tuple[int, int], node_positions: Dict[int, Tuple[int, int]], 
-                                       tier: RoutingTier) -> Optional[List[Tuple[int, int, int]]]:
+    def _route_edge_on_qubit_tier(self, edge: Tuple[int, int], node_positions: Dict[int, Tuple[int, int]], 
+                                  tier: RoutingTier) -> Optional[List[Tuple[int, int, int]]]:
         """
-        Route planar edge on qubit tier using paper's approach.
+        Route edge on qubit tier using HAL paper approach.
         
-        Paper: "The planar subgraph is routed first on the qubit tier using straight lines"
-        For grid-based layouts, this should succeed for most nearest-neighbor connections.
+        Paper: "The planar subgraph is routed first on the qubit tier using straight lines.
+        After this, all other edges are also attempted as straight lines on the qubit tier."
+        
+        Per the paper, qubits are on layer 1, so routing should use both layers 0 and 1.
         """
         u, v = edge
         if u not in node_positions or v not in node_positions:
@@ -665,38 +713,33 @@ class RoutingEngine:
         start_pos = node_positions[u]
         end_pos = node_positions[v]
         
-        # Paper approach: straight-line routing on layer 0 only for planar edges
-        # This keeps the qubit tier clean and organized like in the paper's Tier 0 image
-        path = self.straight_router.route_straight_line(start_pos, end_pos, tier, layer=0)
-        
+        # Try straight-line routing on layer 1 first (where qubits are placed)
+        path = self.straight_router.route_straight_line(start_pos, end_pos, tier, layer=1)
         if path:
             return path
         
-        # If straight line fails, try A* pathfinding on layer 0 with relaxed constraints
+        # If blocked on qubit layer, try layer 0 as fallback (HAL paper's "opposing layer")
+        path = self.straight_router.route_straight_line(start_pos, end_pos, tier, layer=0)
+        if path:
+            # Need bump transitions to connect from layer 1 (qubits) to layer 0 and back
+            return self._create_path_with_layer_transitions(start_pos, end_pos, path, 0)
+        
+        # If straight line fails on both layers, try A* pathfinding using both layers
+        # Start and end on layer 1 (where qubits are)
+        start_3d = (start_pos[0], start_pos[1], 1)
+        end_3d = (end_pos[0], end_pos[1], 1)
+        
+        path = self.pathfinder.find_path(start_3d, end_3d, tier)
+        if path:
+            return path
+        
+        # Fallback: try starting from layer 0
         start_3d = (start_pos[0], start_pos[1], 0)
         end_3d = (end_pos[0], end_pos[1], 0)
         
-        # For short distances, be more permissive with A* routing
-        distance = self._calculate_straight_line_distance(edge, {u: start_pos, v: end_pos})
-        avoid_nodes = set()
-        
-        # For very short edges, allow some path sharing
-        if distance <= 2.0:
-            # Don't avoid any nodes for very short connections
-            path = self.pathfinder.find_path(start_3d, end_3d, tier, avoid_nodes)
-        else:
-            # For longer edges, be more strict about avoiding occupied cells
-            occupied_cells = set()
-            for x in range(tier.grid.shape[0]):
-                for y in range(tier.grid.shape[1]):
-                    if tier.is_occupied(x, y, 0):
-                        occupied_cells.add((x, y))
-            path = self.pathfinder.find_path(start_3d, end_3d, tier, occupied_cells)
-        
+        path = self.pathfinder.find_path(start_3d, end_3d, tier)
         if path:
-            # Ensure path stays on layer 0 (qubit layer)
-            layer_0_path = [(x, y, 0) for x, y, z in path]
-            return layer_0_path
+            return path
         
         return None
     

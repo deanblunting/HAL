@@ -329,23 +329,14 @@ class HAL:
             'max_efficiency': np.max(efficiencies) if efficiencies else 0.0
         }
     
-    def visualize_layout(self, layout: QECCLayout, show_tiers: bool = True, 
-                        interactive: bool = True, separate_tier_plots: bool = True,
-                        save_path: Optional[str] = None) -> None:
+    def visualize_layout(self, layout: QECCLayout) -> None:
         """
         Visualize layout using built-in visualizer.
         
         Args:
             layout: QECCLayout to visualize
-            show_tiers: Whether to show multiple tiers
-            interactive: Whether to create interactive plot
-            separate_tier_plots: Whether to create separate 2D plots for each tier (clearer than 3D)
-            save_path: Optional path to save visualization
         """
-        self.visualizer.plot_layout(layout, show_tiers, interactive, separate_tier_plots)
-        
-        if save_path:
-            self.visualizer.save_layout(layout, save_path)
+        self.visualizer.plot_layout(layout)
     
     def visualize_cost_analysis(self, layout: QECCLayout, show_breakdown: bool = True) -> None:
         """Generate hardware cost analysis visualization using integrated plotting system."""

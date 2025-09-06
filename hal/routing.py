@@ -97,12 +97,12 @@ class AStarPathfinder:
         return None  # No path found
     
     def _heuristic(self, pos1: Tuple[int, int, int], pos2: Tuple[int, int, int]) -> float:
-        """Manhattan distance heuristic with layer change penalty."""
+        """Euclidean distance heuristic with layer change penalty for diagonal movement."""
         x1, y1, l1 = pos1
         x2, y2, l2 = pos2
-        manhattan = abs(x1 - x2) + abs(y1 - y2)
+        euclidean = ((x1 - x2) ** 2 + (y1 - y2) ** 2) ** 0.5
         layer_penalty = abs(l1 - l2) * self.config.layer_change_cost
-        return manhattan + layer_penalty
+        return euclidean + layer_penalty
     
     def _movement_cost(self, pos1: Tuple[int, int, int], pos2: Tuple[int, int, int]) -> float:
         """Cost of moving from pos1 to pos2."""
@@ -116,9 +116,10 @@ class AStarPathfinder:
         if l1 != l2:
             cost += self.config.layer_change_cost
         
-        # Apply diagonal movement penalty
+        # Apply diagonal movement cost (actual distance)
         if abs(x1 - x2) + abs(y1 - y2) > 1:
-            cost += 0.4  # Slightly prefer axis-aligned moves
+            # Diagonal moves have sqrt(2) ≈ 1.414 actual distance vs 1.0 for orthogonal
+            cost *= 1.414  # Use actual Euclidean distance for diagonal moves
         
         return cost
     
@@ -244,14 +245,21 @@ class StraightLineRouter:
     
     def route_straight_with_bumps(self, start: Tuple[int, int], end: Tuple[int, int], 
                                  tier: RoutingTier, start_layer: int = 1, 
-                                 max_bump_transitions: int = 10) -> Optional[List[Tuple[int, int, int]]]:
+                                 max_bump_transitions: int = 10,
+                                 prohibited_layers: Optional[Set[int]] = None) -> Optional[List[Tuple[int, int, int]]]:
         """
         Route straight line with bump transitions when blocked.
         
         ChatGPT Pro recommendation: traverse discrete straight line, flip to other layer
         when blocked at that cell exactly once, continue straight without flipping back
         unless hitting next obstruction.
+        
+        Args:
+            prohibited_layers: Set of layers that cannot be used for routing
         """
+        if prohibited_layers is None:
+            prohibited_layers = set()
+        
         x1, y1 = start
         x2, y2 = end
         
@@ -261,20 +269,34 @@ class StraightLineRouter:
         path_3d = []
         current_layer = start_layer
         bump_count = 0
-        other_layer = 1 - start_layer  # Toggle between 0 and 1
+        
+        # Find available layers for bump transitions (excluding prohibited ones)
+        available_layers = []
+        for layer in range(tier.grid.shape[2]):  # Check all layers in tier
+            if layer not in prohibited_layers:
+                available_layers.append(layer)
+        
+        if not available_layers:
+            return None  # No available layers to route on
         
         for x, y in line_points:
             # Check if current layer at this position is blocked
             if tier.is_occupied(x, y, current_layer):
-                # Try switching to other layer at this exact cell
-                if not tier.is_occupied(x, y, other_layer) and bump_count < max_bump_transitions:
-                    # Switch layers (bump transition)
-                    current_layer = other_layer
-                    other_layer = 1 - current_layer  # Update other layer
-                    bump_count += 1
-                    path_3d.append((x, y, current_layer))
-                else:
-                    # Both layers blocked or max bumps exceeded - route fails
+                # Try switching to an alternative available layer
+                alternative_found = False
+                for alternative_layer in available_layers:
+                    if (alternative_layer != current_layer and 
+                        not tier.is_occupied(x, y, alternative_layer) and 
+                        bump_count < max_bump_transitions):
+                        # Switch to available alternative layer (bump transition)
+                        current_layer = alternative_layer
+                        bump_count += 1
+                        path_3d.append((x, y, current_layer))
+                        alternative_found = True
+                        break
+                
+                if not alternative_found:
+                    # No available alternative layer - route fails
                     return None
             else:
                 # Current layer is free - continue on same layer
@@ -745,7 +767,8 @@ class RoutingEngine:
         # DO NOT route on layer 0 of qubit tier since qubits are on layer 1
         path = self.straight_router.route_straight_with_bumps(
             start_pos, end_pos, tier, start_layer=1, 
-            max_bump_transitions=self.config.max_bump_transitions
+            max_bump_transitions=self.config.max_bump_transitions,
+            prohibited_layers={0}  # Prohibit layer 0 on qubit tier
         )
         if path:
             print(f"Successfully routed edge {edge} on Tier 0 with {len(path)} path points")

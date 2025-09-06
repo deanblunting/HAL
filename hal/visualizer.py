@@ -100,22 +100,18 @@ class HALVisualizer:
                 path_y = [pos[1] for pos in path]
                 
                 if len(path_x) > 1:
-                    # Color logic: Tier 0 always black, higher tiers use layer-based colors
-                    if tier_id == 0:
-                        edge_color = 'black'  # All Tier 0 routes are black
+                    # Color logic: Use layer-based colors for all tiers
+                    layer_counts = {}
+                    for pos in path:
+                        layer = pos[2] % 2  # Layer within tier (0 or 1)
+                        layer_counts[layer] = layer_counts.get(layer, 0) + 1
+                    
+                    # Use the layer where most of the path is
+                    primary_layer = max(layer_counts, key=layer_counts.get) if layer_counts else 0
+                    if primary_layer == 0:
+                        edge_color = 'black'  # Layer 0
                     else:
-                        # Higher tiers: black for layer 0, yellow for layer 1
-                        layer_counts = {}
-                        for pos in path:
-                            layer = pos[2] % 2  # Layer within tier (0 or 1)
-                            layer_counts[layer] = layer_counts.get(layer, 0) + 1
-                        
-                        # Use the layer where most of the path is
-                        primary_layer = max(layer_counts, key=layer_counts.get) if layer_counts else 0
-                        if primary_layer == 0:
-                            edge_color = 'black'  # Layer 0
-                        else:
-                            edge_color = 'yellow'  # Layer 1
+                        edge_color = 'orange'  # Layer 1
                     
                     ax.plot(path_x, path_y, color=edge_color, linewidth=2, alpha=0.8)
                 
@@ -126,13 +122,13 @@ class HALVisualizer:
                     if current_pos[2] != next_pos[2]:  # Layer change = bump bond
                         ax.scatter([current_pos[0], next_pos[0]], 
                                   [current_pos[1], next_pos[1]], 
-                                  c='green', s=50, marker='s', alpha=1.0, zorder=10)
+                                  c='green', s=5, marker='s', alpha=1.0, zorder=10)
             
             # Add TSV markers in red
             if tier.tsvs:
                 tsv_x = [pos[0] for pos in tier.tsvs]
                 tsv_y = [pos[1] for pos in tier.tsvs]
-                ax.scatter(tsv_x, tsv_y, c='red', s=30, marker='x', alpha=0.8, zorder=8)
+                ax.scatter(tsv_x, tsv_y, c='red', s=10, marker='o', alpha=0.8, zorder=8)
             
             ax.set_title(f'Tier {tier_id}')
             ax.set_xlabel('X')
@@ -166,8 +162,18 @@ class HALVisualizer:
             path_x = [pos[0] for pos in path]
             path_y = [pos[1] for pos in path]
             
-            # For single tier layout (always tier 0), use black for all edges
-            edge_color = 'black'  # All qubit tier routes are black
+            # Use layer-based colors for single tier layout too
+            layer_counts = {}
+            for pos in path:
+                layer = pos[2] % 2  # Layer within tier (0 or 1)
+                layer_counts[layer] = layer_counts.get(layer, 0) + 1
+            
+            # Use the layer where most of the path is
+            primary_layer = max(layer_counts, key=layer_counts.get) if layer_counts else 0
+            if primary_layer == 0:
+                edge_color = 'black'  # Layer 0
+            else:
+                edge_color = 'orange'  # Layer 1
             
             plt.plot(path_x, path_y, color=edge_color, linewidth=2, alpha=0.8)
             
@@ -178,7 +184,7 @@ class HALVisualizer:
                 if current_pos[2] != next_pos[2]:  # Layer change = bump bond
                     plt.scatter([current_pos[0], next_pos[0]], 
                               [current_pos[1], next_pos[1]], 
-                              c='green', s=50, marker='s', alpha=1.0, zorder=10)
+                              c='green', s=5, marker='s', alpha=1.0, zorder=10)
         
         # Plot nodes (qubits) in blue
         node_x = [pos[0] for pos in layout.node_positions.values()]
@@ -196,7 +202,7 @@ class HALVisualizer:
         if layout.tiers and layout.tiers[0].tsvs:
             tsv_x = [pos[0] for pos in layout.tiers[0].tsvs]
             tsv_y = [pos[1] for pos in layout.tiers[0].tsvs]
-            plt.scatter(tsv_x, tsv_y, c='red', s=30, marker='x', alpha=0.8, zorder=8)
+            plt.scatter(tsv_x, tsv_y, c='red', s=10, marker='o', alpha=0.8, zorder=8)
         
         plt.title(f"HAL Layout - {len(layout.node_positions)} qubits, "
                  f"{len(layout.edge_routes)} edges\n"

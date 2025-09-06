@@ -11,25 +11,47 @@ from hal import HAL
 from hal.graph_utils import (
     create_bicycle_code_graph,
     create_tile_code_graph,
-    create_radial_code_graph,
+    create_radial_code_graph_from_nkd,
     create_hypergraph_code_graph,
     get_code_custom_positions
 )
 
 
-def get_user_input():
-    """Get quantum code parameters from user."""
-    print("HAL Quantum Error Correcting Code Layout Generator")
-    print("=" * 55)
-    print()
+def get_bb_parameters():
+    """Get BB code parameters (rows and columns)."""
+    print("\nBB Code Parameters:")
+    print("Enter the grid dimensions for the bicycle code")
     
-    print("Please provide the code parameters [n,k,d] where:")
+    while True:
+        try:
+            n1 = int(input("Enter number of rows: "))
+            if n1 <= 0:
+                print("Error: number of rows must be positive")
+                continue
+            break
+        except ValueError:
+            print("Error: Please enter a valid integer")
+    
+    while True:
+        try:
+            n2 = int(input("Enter number of columns: "))
+            if n2 <= 0:
+                print("Error: number of columns must be positive")
+                continue
+            break
+        except ValueError:
+            print("Error: Please enter a valid integer")
+    
+    return n1, n2
+
+
+def get_standard_parameters():
+    """Get standard [n,k,d] parameters for other codes."""
+    print("\nCode Parameters [n,k,d]:")
     print("  n = total number of qubits")
     print("  k = number of logical qubits")  
     print("  d = minimum distance")
-    print()
     
-    # Get parameters
     while True:
         try:
             n = int(input("Enter n (total qubits): "))
@@ -65,7 +87,10 @@ def get_user_input():
 
 def select_code_type():
     """Select quantum code type."""
-    print("\nSelect quantum code type:")
+    print("HAL Quantum Error Correcting Code Layout Generator")
+    print("=" * 55)
+    print()
+    print("Select quantum code type:")
     print("1. BB code (bivariate bicycle)")
     print("2. Tile code")
     print("3. Radial code")
@@ -82,25 +107,29 @@ def select_code_type():
             print("Error: Please enter a valid number")
 
 
-def generate_code_graph(n, k, d, code_type):
-    """Generate quantum code graph."""
+def generate_code_graph(code_type, params):
+    """Generate quantum code graph based on type and parameters."""
     
     if code_type == 1:  # BB code
-        print(f"Generating BB code with parameters [n={n}, k={k}, d={d}]...")
-        graph = create_bicycle_code_graph(n, k, d)
-        return graph, 'bicycle', {'n': n, 'k': k, 'd': d}
+        n1, n2 = params
+        print(f"Generating BB code with dimensions {n1}×{n2} ({n1*n2} qubits)...")
+        graph = create_bicycle_code_graph(n1, n2)
+        return graph, 'bicycle', {'n1': n1, 'n2': n2}
     
     elif code_type == 2:  # Tile code
+        n, k, d = params
         print(f"Generating tile code with parameters [n={n}, k={k}, d={d}]...")
         graph = create_tile_code_graph(n, k, d)
         return graph, 'tile', {'n': n, 'k': k, 'd': d}
     
     elif code_type == 3:  # Radial code
+        n, k, d = params
         print(f"Generating radial code with parameters [n={n}, k={k}, d={d}]...")
-        graph = create_radial_code_graph(n, k, d)
+        graph = create_radial_code_graph_from_nkd(n, k, d)
         return graph, 'radial', {'n': n, 'k': k, 'd': d}
     
     elif code_type == 4:  # Hypergraph code
+        n, k, d = params
         print(f"Generating hypergraph code with parameters [n={n}, k={k}, d={d}]...")
         graph = create_hypergraph_code_graph(n, k, 'structured')
         return graph, 'hypergraph', {'n': n, 'k': k, 'd': d}
@@ -109,20 +138,25 @@ def generate_code_graph(n, k, d, code_type):
 def main():
     """Main application workflow."""
     try:
-        # Get user input
-        n, k, d = get_user_input()
+        # Select code type first
         code_type = select_code_type()
+        
+        # Get parameters based on code type
+        if code_type == 1:  # BB code
+            params = get_bb_parameters()
+        else:  # Other codes use [n,k,d]
+            params = get_standard_parameters()
         
         # Generate code graph
         try:
-            graph, code_family, params = generate_code_graph(n, k, d, code_type)
+            graph, code_family, graph_params = generate_code_graph(code_type, params)
             print(f"\nGenerated graph with {graph.number_of_nodes()} nodes and {graph.number_of_edges()} edges")
         except Exception as e:
             print(f"Error generating code graph: {e}")
             return
         
         # Get custom positions if available
-        custom_positions = get_code_custom_positions(graph, code_family, **params)
+        custom_positions = get_code_custom_positions(graph, code_family, **graph_params)
         if custom_positions:
             print(f"Using custom {code_family} code positions")
         else:

@@ -483,6 +483,9 @@ class PlacementEngine:
             snapped = self.rasterizer.rasterize_positions(custom_positions)
             node_positions = self.rasterizer.compact_grid(snapped)
             
+            # Add spacing between qubits for routing infrastructure
+            node_positions = self._add_qubit_spacing(node_positions, spacing=10)
+            
             # Run normal MPS extraction on the given graph
             # Step 1: Community detection for edge prioritization
             community_detector = CommunityDetector(graph, self.config)
@@ -548,6 +551,9 @@ class PlacementEngine:
         # Step 6: Apply grid compaction with monotone remapping
         final_positions = self.rasterizer.compact_grid(final_positions)
         
+        # Step 7: Add spacing between qubits for routing infrastructure
+        final_positions = self._add_qubit_spacing(final_positions, spacing=10)
+        
         return final_positions, planar_edges, communities
     
     def _calculate_auxiliary_grid_dimensions(self, n_logical_qubits: int) -> Tuple[int, int]:
@@ -563,6 +569,23 @@ class PlacementEngine:
         # Paper's rasterization process determines actual space needs naturally
         initial_size = max(10, int((n_logical_qubits) ** 0.6) + 5)
         return (initial_size, initial_size)
+    
+    def _add_qubit_spacing(self, positions: Dict[int, Tuple[int, int]], spacing: int) -> Dict[int, Tuple[int, int]]:
+        """
+        Add spacing between qubits to allow for routing infrastructure.
+        
+        Args:
+            positions: Current qubit positions
+            spacing: Units of space to add between each qubit
+            
+        Returns:
+            New positions with spacing applied
+        """
+        spaced_positions = {}
+        for node, (x, y) in positions.items():
+            spaced_positions[node] = (x * spacing, y * spacing)
+        
+        return spaced_positions
 
 
 class AspectRatioAnalyzer:

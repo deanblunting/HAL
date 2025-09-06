@@ -20,6 +20,9 @@ class HALConfig:
     # Node size: radius added around each node before routing starts
     node_size: int = 1
     
+    # Qubit spacing: units of space between qubits for routing infrastructure
+    qubit_spacing: int = 10
+    
     # Grid size: overall device area, aspect ratio, and layout canvas granularity
     grid_size: Tuple[int, int] = (100, 100)
     device_aspect_ratio: float = 1.0

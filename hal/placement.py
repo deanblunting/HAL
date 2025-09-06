@@ -484,7 +484,7 @@ class PlacementEngine:
             node_positions = self.rasterizer.compact_grid(snapped)
             
             # Add spacing between qubits for routing infrastructure
-            node_positions = self._add_qubit_spacing(node_positions, spacing=10)
+            node_positions = self._add_qubit_spacing(node_positions, spacing=self.config.qubit_spacing)
             
             # Run normal MPS extraction on the given graph
             # Step 1: Community detection for edge prioritization
@@ -552,7 +552,7 @@ class PlacementEngine:
         final_positions = self.rasterizer.compact_grid(final_positions)
         
         # Step 7: Add spacing between qubits for routing infrastructure
-        final_positions = self._add_qubit_spacing(final_positions, spacing=10)
+        final_positions = self._add_qubit_spacing(final_positions, spacing=self.config.qubit_spacing)
         
         return final_positions, planar_edges, communities
     

@@ -12,6 +12,61 @@ from .data_structures import RoutingTier, RoutingResult, RouteSegment
 from .config import HALConfig
 
 
+def paths_cross(path1: List[Tuple[int, int]], path2: List[Tuple[int, int]]) -> bool:
+    """
+    Check if two 2D paths cross each other using line segment intersection.
+    
+    Args:
+        path1: List of (x, y) points forming first path
+        path2: List of (x, y) points forming second path
+        
+    Returns:
+        True if paths intersect, False otherwise
+    """
+    if len(path1) < 2 or len(path2) < 2:
+        return False
+    
+    # Check each segment of path1 against each segment of path2
+    for i in range(len(path1) - 1):
+        for j in range(len(path2) - 1):
+            if _segments_intersect(path1[i], path1[i + 1], path2[j], path2[j + 1]):
+                return True
+    
+    return False
+
+
+def _segments_intersect(p1: Tuple[int, int], q1: Tuple[int, int], 
+                       p2: Tuple[int, int], q2: Tuple[int, int]) -> bool:
+    """Check if line segment p1q1 intersects with p2q2."""
+    def orientation(p, q, r):
+        val = (q[1] - p[1]) * (r[0] - q[0]) - (q[0] - p[0]) * (r[1] - q[1])
+        if val == 0:
+            return 0  # collinear
+        return 1 if val > 0 else 2  # clockwise or counterclockwise
+    
+    def on_segment(p, q, r):
+        return (q[0] <= max(p[0], r[0]) and q[0] >= min(p[0], r[0]) and
+                q[1] <= max(p[1], r[1]) and q[1] >= min(p[1], r[1]))
+    
+    o1 = orientation(p1, q1, p2)
+    o2 = orientation(p1, q1, q2)
+    o3 = orientation(p2, q2, p1)
+    o4 = orientation(p2, q2, q1)
+    
+    # General case: segments intersect if orientations are different
+    if o1 != o2 and o3 != o4:
+        return True
+    
+    # Special cases for collinear points
+    if (o1 == 0 and on_segment(p1, p2, q1)) or \
+       (o2 == 0 and on_segment(p1, q2, q1)) or \
+       (o3 == 0 and on_segment(p2, p1, q2)) or \
+       (o4 == 0 and on_segment(p2, q1, q2)):
+        return True
+    
+    return False
+
+
 class AStarPathfinder:
     """A* pathfinding algorithm for 3D grid routing."""
     
@@ -21,7 +76,7 @@ class AStarPathfinder:
     def find_path(self, start: Tuple[int, int, int], end: Tuple[int, int, int], 
                   tier: RoutingTier, avoid_nodes: Set[Tuple[int, int]] = None) -> Optional[List[Tuple[int, int, int]]]:
         """
-        Find path from start to end using A* algorithm with improved collision handling.
+        Find path from start to end using A* algorithm with crossing detection.
         
         Args:
             start: (x, y, layer) starting position
@@ -47,6 +102,12 @@ class AStarPathfinder:
             adjusted_end = (end[0], end[1], target_layer)
             path = self._find_path_to_target(start, adjusted_end, tier, avoid_nodes)
             if path:
+                # Check for crossings before accepting the path
+                if self._path_has_crossings(path, tier):
+                    continue  # Try next layer
+                
+                # Path is valid - add to crossing detection
+                self._add_path_to_tier(path, tier)
                 return path
         
         return None  # No path found
@@ -153,6 +214,36 @@ class AStarPathfinder:
             path.append(current)
         return path[::-1]
     
+    def _path_has_crossings(self, path: List[Tuple[int, int, int]], tier: RoutingTier) -> bool:
+        """Check if a 3D path would cross existing paths on any layer."""
+        # Group path points by layer
+        paths_by_layer = {}
+        for x, y, layer in path:
+            if layer not in paths_by_layer:
+                paths_by_layer[layer] = []
+            paths_by_layer[layer].append((x, y))
+        
+        # Check each layer for crossings
+        for layer, path_2d in paths_by_layer.items():
+            if len(path_2d) >= 2 and tier.would_path_cross(path_2d, layer):
+                return True
+        
+        return False
+    
+    def _add_path_to_tier(self, path: List[Tuple[int, int, int]], tier: RoutingTier):
+        """Add a 3D path to tier's crossing detection tracking."""
+        # Group path points by layer
+        paths_by_layer = {}
+        for x, y, layer in path:
+            if layer not in paths_by_layer:
+                paths_by_layer[layer] = []
+            paths_by_layer[layer].append((x, y))
+        
+        # Add each layer's path segment
+        for layer, path_2d in paths_by_layer.items():
+            if len(path_2d) >= 2:
+                tier.add_path(path_2d, layer)
+    
     def _is_position_blocked(self, tier: RoutingTier, x: int, y: int, layer: int, 
                             current_pos: Tuple[int, int, int]) -> bool:
         """Strict position blocking check - HAL paper: 'edges on the same layer cannot cross'."""
@@ -176,37 +267,134 @@ class StraightLineRouter:
     def route_straight_line(self, start: Tuple[int, int], end: Tuple[int, int], 
                            tier: RoutingTier, layer: int = 0) -> Optional[List[Tuple[int, int, int]]]:
         """
-        Route edge as straight line if no collisions.
+        Route edge using appropriate strategy based on tier.
+        
+        Tier 0 (qubit tier): Single layer routing only - no bump transitions allowed
+        Higher tiers: HAL paper's minimum bump bond strategy with layer switching
         
         Args:
             start: (x, y) start position
             end: (x, y) end position
             tier: RoutingTier to route on
-            layer: Layer to route on
+            layer: Layer to route on (starting layer)
             
         Returns:
-            List of (x, y, layer) positions, or None if blocked
+            List of (x, y, layer) positions, or None if routing fails
         """
-        x1, y1 = start
-        x2, y2 = end
+        if tier.tier_id == 0:
+            # Tier 0: No bump transitions allowed - single layer routing only
+            return self._route_single_layer(start, end, tier, layer)
+        else:
+            # Higher tiers: Use minimum bump bond strategy
+            return self._route_with_minimum_bumps(start, end, tier, layer)
+    
+    def _route_single_layer(self, start: Tuple[int, int], end: Tuple[int, int], 
+                           tier: RoutingTier, layer: int) -> Optional[List[Tuple[int, int, int]]]:
+        """
+        Route edge on single layer only (for tier 0 - no bump transitions).
         
-        # Apply Bresenham line rasterization algorithm
-        line_points = self._bresenham_line(x1, y1, x2, y2)
+        This is the original simple straight-line routing that fails if any
+        obstruction is encountered, forcing the edge to escalate to higher tiers.
+        """
+        # Generate straight line path
+        line_points = self._bresenham_line(start[0], start[1], end[0], end[1])
         
-        # HAL paper: "The router scans the MPS edges once and paints the corresponding 
-        # grid cells along the straight line between their endpoints"
-        # Check EVERY cell the path would occupy for conflicts
-        
+        # Check for cell occupancy conflicts
         for x, y in line_points:
             if tier.is_occupied(x, y, layer):
-                # HAL paper: "edges on the same layer cannot cross"
-                return None  # Path would intersect existing route - blocked
+                return None
         
-        # If we get here, entire path is clear of conflicts
+        # Check for path crossings - no crossings allowed
+        if tier.would_path_cross(line_points, layer):
+            return None
+        
+        # Path is valid - add it to tier's crossing detection
+        tier.add_path(line_points, layer)
         
         # Transform to 3D coordinate representation
-        path = [(x, y, layer) for x, y in line_points]
-        return path
+        return [(x, y, layer) for x, y in line_points]
+    
+    def _route_with_minimum_bumps(self, start: Tuple[int, int], end: Tuple[int, int], 
+                                 tier: RoutingTier, start_layer: int) -> Optional[List[Tuple[int, int, int]]]:
+        """
+        Implement HAL paper's minimum bump bond routing strategy.
+        
+        Strategy:
+        1. Generate straight line path from start to end
+        2. Walk along path on current layer until obstruction
+        3. If blocked, try switching to opposing layer (bump bond)
+        4. Continue on new layer until next obstruction or target
+        5. Repeat layer switches only when necessary
+        """
+        # Generate the straight line path in 2D
+        line_points = self._bresenham_line(start[0], start[1], end[0], end[1])
+        if len(line_points) < 2:
+            return [(start[0], start[1], start_layer)]
+        
+        # Track the full 3D path with layer transitions
+        path_3d = []
+        current_layer = start_layer
+        bump_count = 0
+        
+        # Track paths for crossing detection (by layer)
+        temp_paths_by_layer = {}
+        
+        for i, (x, y) in enumerate(line_points):
+            # Check if current position is blocked on current layer
+            is_blocked = (tier.is_occupied(x, y, current_layer) or 
+                         self._would_cause_crossing(x, y, i, line_points, current_layer, tier, temp_paths_by_layer))
+            
+            if is_blocked and bump_count < self.config.max_bump_transitions:
+                # Try switching to opposing layer
+                opposing_layer = 1 - current_layer if current_layer in [0, 1] else 0
+                opposing_blocked = (tier.is_occupied(x, y, opposing_layer) or
+                                  self._would_cause_crossing(x, y, i, line_points, opposing_layer, tier, temp_paths_by_layer))
+                
+                if not opposing_blocked:
+                    # Switch to opposing layer (bump transition)
+                    current_layer = opposing_layer
+                    bump_count += 1
+                else:
+                    # Both layers blocked - routing fails
+                    return None
+            elif is_blocked:
+                # Max bump transitions reached and still blocked
+                return None
+            
+            # Add point to path
+            path_3d.append((x, y, current_layer))
+            
+            # Track path segment for crossing detection
+            if current_layer not in temp_paths_by_layer:
+                temp_paths_by_layer[current_layer] = []
+            temp_paths_by_layer[current_layer].append((x, y))
+        
+        # Validate no crossings in the complete path
+        for layer, path_2d in temp_paths_by_layer.items():
+            if len(path_2d) >= 2 and tier.would_path_cross(path_2d, layer):
+                return None
+        
+        # Path is valid - add all segments to tier's crossing detection
+        for layer, path_2d in temp_paths_by_layer.items():
+            if len(path_2d) >= 2:
+                tier.add_path(path_2d, layer)
+        
+        return path_3d
+    
+    def _would_cause_crossing(self, x: int, y: int, point_index: int, 
+                             line_points: List[Tuple[int, int]], layer: int, 
+                             tier: RoutingTier, temp_paths: Dict) -> bool:
+        """Check if adding this point would cause a crossing."""
+        if layer not in temp_paths:
+            return False
+        
+        # Create temporary path segment up to this point
+        current_segment = temp_paths[layer] + [(x, y)]
+        
+        if len(current_segment) >= 2:
+            return tier.would_path_cross(current_segment, layer)
+        
+        return False
     
     def _bresenham_line(self, x1: int, y1: int, x2: int, y2: int) -> List[Tuple[int, int]]:
         """Bresenham's line algorithm for integer coordinates."""
@@ -486,7 +674,7 @@ class RoutingEngine:
         
         all_edges = list(graph.edges())
         
-        # Step 1: Route planar subgraph edges first (paper's MPS routing)
+        # Step 1: Route ONLY planar subgraph edges on Tier 0 (qubit tier)
         planar_edges = [edge for edge in all_edges if edge in planar_subgraph_edges or 
                        (edge[1], edge[0]) in planar_subgraph_edges]
         
@@ -494,12 +682,14 @@ class RoutingEngine:
         planar_edges_by_length = sorted(planar_edges, 
             key=lambda e: self._calculate_straight_line_distance(e, node_positions))
         
-        remaining_edges = set(all_edges)  # Start with all edges
+        # Start with all non-planar edges for higher tier routing
+        remaining_edges = set(all_edges) - set(planar_edges)
         tier_0_routed = 0
         
-        print(f"Routing {len(planar_edges)} planar subgraph edges on Tier 0...")
+        print(f"Tier 0: Routing {len(planar_edges)} planar edges only (non-planar edges skip to higher tiers)")
         
         # Route planar subgraph edges on qubit tier (Tier 0)
+        failed_planar_edges = []
         for edge in planar_edges_by_length:
             path = self._route_edge_on_qubit_tier(edge, node_positions, qubit_tier)
             if path:
@@ -508,32 +698,16 @@ class RoutingEngine:
                 qubit_tier.edges.append(edge)
                 tier_usage[0] += 1
                 tier_0_routed += 1
-                remaining_edges.discard(edge)
-            # If planar edge fails on tier 0, it stays in remaining_edges for higher tier routing
+            else:
+                # Planar edges that fail remain unrouted (cannot escalate to higher tiers)
+                failed_planar_edges.append(edge)
+                print(f"Warning: Planar edge {edge} could not be routed on Tier 0 and will remain unrouted")
         
-        # Step 2: Aggressive straight-line routing - try ALL remaining edges on Tier 0
-        # "all other edges are also attempted as straight lines on the qubit tier"
-        non_planar_edges = list(remaining_edges)
-        non_planar_by_distance = sorted(non_planar_edges, 
-            key=lambda e: self._calculate_straight_line_distance(e, node_positions))
+        if failed_planar_edges:
+            print(f"Failed to route {len(failed_planar_edges)} planar edges on Tier 0. These edges remain unrouted.")
         
-        print(f"Attempting aggressive straight-line routing for {len(non_planar_edges)} remaining edges on Tier 0...")
-        
-        additional_tier0_routed = 0
-        for edge in non_planar_by_distance:
-            path = self._route_edge_on_qubit_tier(edge, node_positions, qubit_tier)
-            if path:
-                edge_routes[edge] = path
-                self._mark_path_occupied(path, qubit_tier)
-                qubit_tier.edges.append(edge)
-                tier_usage[0] += 1
-                additional_tier0_routed += 1
-                remaining_edges.discard(edge)
-            # If edge fails on tier 0, it stays in remaining_edges for higher tier routing
-        
-        total_tier0_routed = tier_0_routed + additional_tier0_routed
-        print(f"Tier 0 completion: {total_tier0_routed}/{len(all_edges)} total edges routed ({tier_0_routed} planar + {additional_tier0_routed} aggressive)")
-        print(f"Higher-tier routing required for {len(remaining_edges)} edges")
+        print(f"Tier 0 completion: {tier_0_routed}/{len(planar_edges)} planar edges routed")
+        print(f"Higher-tier routing required for {len(remaining_edges)} non-planar edges")
         
         # Route remaining edges using FIFO queue approach
         # Start with tier 1 for higher tier routing (tier 0 is qubit tier)
@@ -594,8 +768,8 @@ class RoutingEngine:
                 # All edges routed successfully
                 break
         
-        # Mark unrouted edges
-        unrouted_edges = remaining_edges
+        # Mark unrouted edges (remaining non-planar edges + failed planar edges)
+        unrouted_edges = remaining_edges | set(failed_planar_edges)
         
         
         # Calculate metrics
@@ -746,12 +920,13 @@ class RoutingEngine:
     def _route_edge_on_qubit_tier(self, edge: Tuple[int, int], node_positions: Dict[int, Tuple[int, int]], 
                                   tier: RoutingTier) -> Optional[List[Tuple[int, int, int]]]:
         """
-        Route edge on qubit tier using HAL paper approach.
+        Route planar edge on qubit tier using simple straight-line routing only.
         
-        Paper: "The planar subgraph is routed first on the qubit tier using straight lines.
-        After this, all other edges are also attempted as straight lines on the qubit tier."
-        
-        Per the paper, qubits are on layer 1, so routing should use both layers 0 and 1.
+        Tier 0 constraints:
+        - Only routes planar edges (guaranteed non-crossing by planar subgraph extraction)
+        - Only uses layer 1 (layer 0 reserved for control/readout circuitry) 
+        - Only straight-line routing (no A*, no bump transitions, no complex pathfinding)
+        - If straight-line fails, edge remains unrouted (cannot escalate to higher tiers)
         """
         u, v = edge
         if u not in node_positions or v not in node_positions:
@@ -760,28 +935,96 @@ class RoutingEngine:
         start_pos = node_positions[u]
         end_pos = node_positions[v]
         
-        # HAL paper: Only straight-line routing allowed on qubit tier (Tier 0)
-        # No A* pathfinding - if straight line fails, escalate to higher tiers
-        
-        # Try straight-line routing with bump transitions ONLY on layer 1 (where qubits are)
-        # DO NOT route on layer 0 of qubit tier since qubits are on layer 1
-        path = self.straight_router.route_straight_with_bumps(
-            start_pos, end_pos, tier, start_layer=1, 
-            max_bump_transitions=self.config.max_bump_transitions,
-            prohibited_layers={0}  # Prohibit layer 0 on qubit tier
-        )
+        # Single strategy: Straight-line routing on layer 1 only
+        # Use _route_single_layer to ensure no bump transitions are attempted
+        path = self.straight_router._route_single_layer(start_pos, end_pos, tier, layer=1)
         if path:
-            print(f"Successfully routed edge {edge} on Tier 0 with {len(path)} path points")
             return path
         
-        # If straight-line with bumps fails on qubit tier, escalate to higher tiers
-        print(f"Failed to route edge {edge} on Tier 0, escalating to higher tier")
+        # If straight-line routing fails, edge cannot be routed on qubit tier
         return None
     
+    def _astar_single_layer(self, start: Tuple[int, int, int], end: Tuple[int, int, int], 
+                           tier: RoutingTier, layer: int) -> Optional[List[Tuple[int, int, int]]]:
+        """
+        A* pathfinding restricted to a single layer (no vertical transitions).
+        Used for planar edge routing on qubit tier layer 1.
+        """
+        # Priority queue: (f_score, g_score, position)
+        open_set = [(0, 0, start)]
+        came_from = {}
+        g_score = {start: 0}
+        f_score = {start: self.pathfinder._heuristic(start, end)}
+        visited = set()
+        
+        while open_set:
+            current_f, current_g, current = heapq.heappop(open_set)
+            
+            if current in visited:
+                continue
+            visited.add(current)
+            
+            # Check if we reached the target
+            if current[:2] == end[:2]:  # Same x,y position
+                return self.pathfinder._reconstruct_path(came_from, current)
+            
+            # Get neighbors in the same layer only
+            for neighbor in self._get_single_layer_neighbors(current, tier, layer):
+                if neighbor in visited:
+                    continue
+                
+                # Check if position is blocked
+                nx, ny, nl = neighbor
+                if tier.is_occupied(nx, ny, nl):
+                    continue
+                
+                # Calculate movement cost
+                tentative_g = g_score[current] + self.pathfinder._movement_cost(current, neighbor)
+                
+                if neighbor not in g_score or tentative_g < g_score[neighbor]:
+                    came_from[neighbor] = current
+                    g_score[neighbor] = tentative_g
+                    f_score[neighbor] = tentative_g + self.pathfinder._heuristic(neighbor, end)
+                    heapq.heappush(open_set, (f_score[neighbor], tentative_g, neighbor))
+        
+        return None
+    
+    def _get_single_layer_neighbors(self, pos: Tuple[int, int, int], tier: RoutingTier, layer: int) -> List[Tuple[int, int, int]]:
+        """Get valid neighboring positions within the same layer only."""
+        x, y, _ = pos  # Ignore the z-coordinate from pos, use fixed layer
+        neighbors = []
+        
+        # Generate 8-connected neighborhood within the specified layer only
+        for dx in [-1, 0, 1]:
+            for dy in [-1, 0, 1]:
+                if dx == 0 and dy == 0:
+                    continue
+                new_x, new_y = x + dx, y + dy
+                if (0 <= new_x < tier.grid.shape[0] and 
+                    0 <= new_y < tier.grid.shape[1]):
+                    neighbors.append((new_x, new_y, layer))
+        
+        return neighbors
+    
     def _mark_path_occupied(self, path: List[Tuple[int, int, int]], tier: RoutingTier):
-        """Mark path cells as occupied - strict binary occupancy for all tiers."""
-        for x, y, layer in path:
-            # HAL paper: strict binary occupancy - cell is either free or blocked
+        """
+        Mark path cells as occupied - strict binary occupancy for all tiers.
+        
+        IMPORTANT: Node positions are connection points that should NOT be marked as occupied.
+        Only intermediate routing cells should be blocked to prevent path crossings.
+        """
+        if len(path) <= 2:
+            # For direct connections (start->end), don't mark any cells as occupied
+            # since both endpoints are node positions that should remain accessible
+            return
+        
+        # Mark only intermediate path cells as occupied (excluding start and end nodes)
+        for i, (x, y, layer) in enumerate(path):
+            if i == 0 or i == len(path) - 1:
+                # Skip start and end positions - these are node connection points
+                continue
+            
+            # HAL paper: strict binary occupancy for intermediate routing cells
             tier.set_occupied(x, y, layer, True)
     
     def _is_tier_congested(self, tier: RoutingTier) -> bool:
@@ -886,7 +1129,7 @@ class RoutingEngine:
         
         return {
             'tiers': len(tiers),
-            'length': total_length / num_edges if num_edges > 0 else 0.0,
+            'length': (total_length / num_edges / self.config.qubit_spacing) if num_edges > 0 else 0.0,
             'bumps': max_avg_bumps,  # Maximum average bump transitions across all tiers
             'tsvs': avg_tsvs,        # Average TSVs per edge on higher tiers
             'bump_cost': total_bump_cost / num_edges if num_edges > 0 else 0.0,  # Enhanced bump cost metric

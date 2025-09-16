@@ -148,3 +148,6 @@ papers/
 
 # Results folder - generated analysis outputs
 results/
+
+# Tests folder
+tests/

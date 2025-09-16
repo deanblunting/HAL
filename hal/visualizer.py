@@ -54,75 +54,66 @@ class HALVisualizer:
         else:
             axes = axes.flatten()
         
-        # Separate logical and infrastructure routes
-        logical_routes = []
+        # Get infrastructure routes from edge_routes if needed
         infrastructure_routes = []
-        
         for edge, path in layout.edge_routes.items():
             if not path:
                 continue
             u, v = edge
             if u >= 1000 or v >= 1000:
                 infrastructure_routes.append((edge, path))
-            else:
-                logical_routes.append((edge, path))
-        
+
         for tier_id, tier in enumerate(layout.tiers):
             ax = axes[tier_id]
-            
+
             # Show grid
             grid_width, grid_height = tier.grid.shape[0], tier.grid.shape[1]
-            
+
             # Grid lines
             for x in range(grid_width + 1):
                 ax.plot([x, x], [0, grid_height], 'lightgray', alpha=0.3, linewidth=0.5)
             for y in range(grid_height + 1):
                 ax.plot([0, grid_width], [y, y], 'lightgray', alpha=0.3, linewidth=0.5)
-            
+
             # Plot qubits (only on tier 0) - use blue color
             if tier_id == 0:
                 node_x = [pos[0] for pos in layout.node_positions.values()]
                 node_y = [pos[1] for pos in layout.node_positions.values()]
                 node_ids = list(layout.node_positions.keys())
-                
+
                 ax.scatter(node_x, node_y, c='blue', s=100, zorder=5)
                 for i, node_id in enumerate(node_ids):
-                    ax.annotate(str(node_id), (node_x[i], node_y[i]), 
+                    ax.annotate(str(node_id), (node_x[i], node_y[i]),
                                xytext=(2, 2), textcoords='offset points', fontsize=8)
-            
-            # Plot logical routes for this tier
-            for edge, path in logical_routes:
-                if edge not in tier.edges:
-                    continue
-                
-                # Plot all path segments (project to 2D)
-                path_x = [pos[0] for pos in path]
-                path_y = [pos[1] for pos in path]
-                
-                if len(path_x) > 1:
-                    # Color logic: Use layer-based colors for all tiers
-                    layer_counts = {}
-                    for pos in path:
-                        layer = pos[2] % 2  # Layer within tier (0 or 1)
-                        layer_counts[layer] = layer_counts.get(layer, 0) + 1
-                    
-                    # Use the layer where most of the path is
-                    primary_layer = max(layer_counts, key=layer_counts.get) if layer_counts else 0
-                    if primary_layer == 0:
-                        edge_color = 'black'  # Layer 0
-                    else:
-                        edge_color = 'orange'  # Layer 1
-                    
-                    ax.plot(path_x, path_y, color=edge_color, linewidth=2, alpha=0.8)
-                
-                # Highlight bump bonds (layer changes) with green squares
-                for i in range(len(path) - 1):
-                    current_pos = path[i]
-                    next_pos = path[i + 1]
-                    if current_pos[2] != next_pos[2]:  # Layer change = bump bond
-                        ax.scatter([current_pos[0], next_pos[0]], 
-                                  [current_pos[1], next_pos[1]], 
-                                  c='green', s=5, marker='s', alpha=1.0, zorder=10)
+
+            # Plot logical routes for this tier only (process tier-specific data)
+            if hasattr(tier, 'routed_paths'):
+                for layer, paths in tier.routed_paths.items():
+                    for path_3d in paths:
+                        if len(path_3d) < 2:
+                            continue
+
+                        # Plot all path segments (project to 2D)
+                        path_x = [pos[0] for pos in path_3d]
+                        path_y = [pos[1] for pos in path_3d]
+
+                        if len(path_x) > 1:
+                            # Color logic: Use primary layer for path color
+                            if layer == 0:
+                                edge_color = 'black'  # Layer 0
+                            else:
+                                edge_color = 'orange'  # Layer 1
+
+                            ax.plot(path_x, path_y, color=edge_color, linewidth=2, alpha=0.8)
+
+                        # Highlight bump bonds (layer changes) with green squares
+                        for i in range(len(path_3d) - 1):
+                            current_pos = path_3d[i]
+                            next_pos = path_3d[i + 1]
+                            if current_pos[2] != next_pos[2]:  # Layer change = bump bond
+                                ax.scatter([current_pos[0], next_pos[0]],
+                                          [current_pos[1], next_pos[1]],
+                                          c='green', s=5, marker='s', alpha=1.0, zorder=10)
             
             # Add TSV markers in red
             if tier.tsvs:
@@ -142,7 +133,12 @@ class HALVisualizer:
                 if i < len(axes):
                     axes[i].set_visible(False)
         
-        logical_count = len(logical_routes)
+        # Calculate total logical routes across all tiers
+        logical_count = 0
+        for tier in layout.tiers:
+            if hasattr(tier, 'routed_paths'):
+                for layer, paths in tier.routed_paths.items():
+                    logical_count += len(paths)
         
         plt.suptitle(f'HAL Multi-Tier Layout - {len(layout.node_positions)} qubits, '
                     f'{logical_count} logical edges\n'

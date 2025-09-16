@@ -301,14 +301,24 @@ def _is_prime(n: int) -> bool:
     return True
 
 
-def _generate_classical_radial_matrix(r: int, s: int) -> np.ndarray:
+def _generate_classical_radial_matrix(r: int, s: int, matrix_id: int = 0) -> np.ndarray:
     """
     Generate a classical radial code matrix A with elements a(u,u').
     
     Each element describes connections between rings u and u'.
     Ensures girth ≥ 6 and linear independence constraints.
+    
+    Args:
+        r: Number of rings
+        s: Prime field parameter
+        matrix_id: Identifier to generate different matrices deterministically
     """
     import random
+    from .config import HALConfig
+    
+    # Use the HAL config random seed plus matrix_id for deterministic but different generation
+    config = HALConfig()
+    random.seed(config.random_seed + matrix_id)
     
     A = np.zeros((r, r), dtype=int)
     
@@ -562,12 +572,14 @@ def create_radial_code_graph(r: int, s: int) -> nx.Graph:
         raise ValueError(f"s ({s}) must be prime")
     
     # Generate classical radial codes H1 and H2
-    A1 = _generate_classical_radial_matrix(r, s)
-    A2 = _generate_classical_radial_matrix(r, s)
+    A1 = _generate_classical_radial_matrix(r, s, 0)
+    A2 = _generate_classical_radial_matrix(r, s, 1)
     
     # Ensure A1 and A2 are different for better distance properties
+    attempt = 2
     while _matrices_equal(A1, A2):
-        A2 = _generate_classical_radial_matrix(r, s)
+        A2 = _generate_classical_radial_matrix(r, s, attempt)
+        attempt += 1
     
     # Create quantum code via lifted product
     G = _lifted_product_to_graph(A1, A2, r, s)
@@ -736,83 +748,6 @@ def get_code_custom_positions(graph: nx.Graph, code_type: str,
         return None
 
 
-def create_radial_code_graph_legacy(rings: int, nodes_per_ring: int, ring_connections: str = 'nearest') -> nx.Graph:
-    """
-    Legacy radial code graph creator (kept for backward compatibility).
-    
-    Args:
-        rings: Number of concentric rings
-        nodes_per_ring: Number of nodes in each ring
-        ring_connections: Type of connections between rings ('nearest', 'full', 'alternating')
-    
-    Returns:
-        NetworkX graph representing the radial code
-    """
-    G = nx.Graph()
-    
-    # Add center node if rings > 0
-    total_nodes = 0
-    if rings > 0:
-        G.add_node(0)
-        total_nodes = 1
-    
-    # Add nodes for each ring
-    ring_start_nodes = [0]  # Start index for each ring
-    for ring in range(1, rings + 1):
-        ring_nodes = []
-        for i in range(nodes_per_ring):
-            node_id = total_nodes + i
-            G.add_node(node_id)
-            ring_nodes.append(node_id)
-        ring_start_nodes.append(total_nodes)
-        total_nodes += nodes_per_ring
-        
-        # Connect nodes within the ring (circular)
-        for i in range(nodes_per_ring):
-            current = ring_start_nodes[ring] + i
-            next_node = ring_start_nodes[ring] + ((i + 1) % nodes_per_ring)
-            G.add_edge(current, next_node)
-    
-    # Connect rings based on connection type
-    for ring in range(1, rings + 1):
-        if ring == 1:
-            # Connect center to first ring
-            center = 0
-            for i in range(nodes_per_ring):
-                ring_node = ring_start_nodes[ring] + i
-                G.add_edge(center, ring_node)
-        else:
-            # Connect to previous ring
-            prev_ring_start = ring_start_nodes[ring - 1]
-            curr_ring_start = ring_start_nodes[ring]
-            
-            if ring_connections == 'nearest':
-                # Connect each node to nearest node(s) in previous ring
-                for i in range(nodes_per_ring):
-                    curr_node = curr_ring_start + i
-                    # Connect to corresponding node in previous ring
-                    prev_node = prev_ring_start + i
-                    G.add_edge(curr_node, prev_node)
-                    
-            elif ring_connections == 'full':
-                # Connect each node to all nodes in previous ring
-                for i in range(nodes_per_ring):
-                    curr_node = curr_ring_start + i
-                    for j in range(nodes_per_ring):
-                        prev_node = prev_ring_start + j
-                        G.add_edge(curr_node, prev_node)
-                        
-            elif ring_connections == 'alternating':
-                # Connect each node to two adjacent nodes in previous ring
-                for i in range(nodes_per_ring):
-                    curr_node = curr_ring_start + i
-                    # Connect to two adjacent nodes in previous ring
-                    prev_node1 = prev_ring_start + (i % nodes_per_ring)
-                    prev_node2 = prev_ring_start + ((i + 1) % nodes_per_ring)
-                    G.add_edge(curr_node, prev_node1)
-                    G.add_edge(curr_node, prev_node2)
-    
-    return G
 
 
 

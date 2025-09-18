@@ -261,8 +261,8 @@ class AStarPathfinder:
                 if tier.is_occupied(nx, ny, nl):
                     continue
                 
-                # CRITICAL: Check for line segment crossings with existing paths
-                if self._would_create_crossing(current, neighbor, tier):
+                # CRITICAL: Check for line segment crossings with existing paths (skip for tier 0)
+                if tier.tier_id != 0 and self._would_create_crossing(current, neighbor, tier):
                     continue
 
                 # Compute transition cost between positions
@@ -332,6 +332,10 @@ class AStarPathfinder:
         """
         Fast crossing check using unified CrossingDetector with sweep line algorithm.
         """
+        # Skip crossing detection for tier 0 (planar edges shouldn't cross by definition)
+        if tier.tier_id == 0:
+            return False
+
         # Only check crossings on the same layer
         if current[2] != neighbor[2]:
             return False  # Layer transitions don't create crossings
@@ -400,8 +404,7 @@ class StraightLineRouter:
             if tier.is_occupied(x, y, layer):
                 return None
 
-        # Path is valid
-
+        # Path is valid for tier 0 (planar edges shouldn't cross by definition)
         # Transform to 3D coordinate representation
         return [(x, y, layer) for x, y in line_points]
 
@@ -472,8 +475,8 @@ class StraightLineRouter:
             can_use_current = is_endpoint or not tier.is_occupied(x, y, current_layer)
             
             if can_use_current:
-                # Quick crossing check for this point
-                if not self._point_creates_crossing((x, y), tier, current_layer, i, line_points):
+                # Quick crossing check for this point (skip for tier 0)
+                if tier.tier_id == 0 or not self._point_creates_crossing((x, y), tier, current_layer, i, line_points):
                     path_3d.append((x, y, current_layer))
                     continue
             
@@ -483,7 +486,7 @@ class StraightLineRouter:
                 
                 # Check if opposing layer works
                 can_use_opposing = is_endpoint or not tier.is_occupied(x, y, opposing_layer)
-                if can_use_opposing and not self._point_creates_crossing((x, y), tier, opposing_layer, i, line_points):
+                if can_use_opposing and (tier.tier_id == 0 or not self._point_creates_crossing((x, y), tier, opposing_layer, i, line_points)):
                     current_layer = opposing_layer
                     bump_count += 1
                     path_3d.append((x, y, current_layer))
@@ -516,6 +519,10 @@ class StraightLineRouter:
     def _validate_path_crossings_quick(self, path_3d: List[Tuple[int, int, int]],
                                      tier: RoutingTier) -> bool:
         """Quick crossing validation using unified CrossingDetector."""
+        # Skip crossing detection for tier 0 (planar edges shouldn't cross by definition)
+        if tier.tier_id == 0:
+            return True
+
         # Group by layer for efficient checking
         layer_paths = {}
         for x, y, z in path_3d:
@@ -921,8 +928,8 @@ class RoutingEngine:
                     # Create full path with TSV connections to tier 0
                     full_path = self._create_path_with_layer_transitions(start_pos, end_pos, path, layer)
                     
-                    # Validate path doesn't create crossings
-                    if self._validate_full_path_crossings(full_path, tier):
+                    # Validate path doesn't create crossings (skip for tier 0)
+                    if tier.tier_id == 0 or self._validate_full_path_crossings(full_path, tier):
                         # Count layer transitions directly (straight-line router already produced bumps)
                         bump_count = self._count_layer_transitions(full_path)
                         if bump_count <= self.config.max_bump_transitions:
@@ -947,8 +954,8 @@ class RoutingEngine:
                     # Create full path with TSV connections to tier 0
                     full_path = self._create_path_with_layer_transitions(start_pos, end_pos, astar_path, layer)
                     
-                    # Validate A* path doesn't create crossings
-                    if self._validate_full_path_crossings(full_path, tier):
+                    # Validate A* path doesn't create crossings (skip for tier 0)
+                    if tier.tier_id == 0 or self._validate_full_path_crossings(full_path, tier):
                         # A* should not use bump transitions - only TSV transitions
                         tier.bump_transitions[edge] = 0  # A* routing has no bumps
                         self._mark_layer_usage(tier, layer)

@@ -7,29 +7,176 @@ import networkx as nx
 from typing import Dict, List, Set, Tuple, Optional
 import heapq
 from collections import defaultdict, deque
-from shapely.geometry import LineString
-from shapely.strtree import STRtree
 
 from .data_structures import RoutingTier, RoutingResult, RouteSegment
 from .config import HALConfig
 
 
+def orientation(p: Tuple[int, int], q: Tuple[int, int], r: Tuple[int, int]) -> int:
+    """
+    Find orientation of ordered triplet (p, q, r).
+    Returns:
+        0: Colinear points
+        1: Clockwise orientation
+        2: Counterclockwise orientation
+    """
+    val = (q[1] - p[1]) * (r[0] - q[0]) - (q[0] - p[0]) * (r[1] - q[1])
+    if val == 0:
+        return 0  # Colinear
+    return 1 if val > 0 else 2  # Clockwise or counterclockwise
+
+
+def on_segment(p: Tuple[int, int], q: Tuple[int, int], r: Tuple[int, int]) -> bool:
+    """
+    Check if point q lies on line segment pr (given that p, q, r are colinear).
+    """
+    return (q[0] <= max(p[0], r[0]) and q[0] >= min(p[0], r[0]) and
+            q[1] <= max(p[1], r[1]) and q[1] >= min(p[1], r[1]))
+
+
 def line_segments_intersect(seg1_start: Tuple[int, int], seg1_end: Tuple[int, int],
                            seg2_start: Tuple[int, int], seg2_end: Tuple[int, int]) -> bool:
     """
-    Centralized line segment intersection detection using Shapely for robust geometry.
+    Mathematical line segment intersection detection using orientation method.
     Returns True if the two line segments intersect, False otherwise.
     Endpoint sharing is allowed and does not count as a crossing.
     """
     # Check for endpoint sharing - this is allowed (paths can touch at endpoints)
-    if (seg1_start == seg2_start or seg1_start == seg2_end or 
+    if (seg1_start == seg2_start or seg1_start == seg2_end or
         seg1_end == seg2_start or seg1_end == seg2_end):
         return False  # Endpoint sharing is not a crossing
-    
-    line1 = LineString([seg1_start, seg1_end])
-    line2 = LineString([seg2_start, seg2_end])
-    # Use crosses() instead of intersects() to exclude touching at endpoints
-    return line1.crosses(line2)
+
+    p1, q1 = seg1_start, seg1_end
+    p2, q2 = seg2_start, seg2_end
+
+    # Find the four orientations needed for general and special cases
+    o1 = orientation(p1, q1, p2)
+    o2 = orientation(p1, q1, q2)
+    o3 = orientation(p2, q2, p1)
+    o4 = orientation(p2, q2, q1)
+
+    # General case: segments intersect if orientations differ
+    if o1 != o2 and o3 != o4:
+        return True
+
+    # Special cases for colinear points
+    # p1, q1 and p2 are colinear and p2 lies on segment p1q1
+    if o1 == 0 and on_segment(p1, p2, q1):
+        return True
+
+    # p1, q1 and q2 are colinear and q2 lies on segment p1q1
+    if o2 == 0 and on_segment(p1, q2, q1):
+        return True
+
+    # p2, q2 and p1 are colinear and p1 lies on segment p2q2
+    if o3 == 0 and on_segment(p2, p1, q2):
+        return True
+
+    # p2, q2 and q1 are colinear and q1 lies on segment p2q2
+    if o4 == 0 and on_segment(p2, q1, q2):
+        return True
+
+    return False  # Doesn't fall in any of the above cases
+
+
+class Path:
+    """
+    Lightweight replacement for Shapely LineString.
+    Stores a sequence of 2D points and provides intersection testing.
+    """
+
+    def __init__(self, points: List[Tuple[int, int]]):
+        """Initialize path with list of (x, y) points."""
+        if len(points) < 2:
+            raise ValueError("Path must have at least 2 points")
+        self.points = points
+        self._bbox = None
+
+    @property
+    def bbox(self) -> Tuple[int, int, int, int]:
+        """Get bounding box as (min_x, min_y, max_x, max_y)."""
+        if self._bbox is None:
+            xs = [p[0] for p in self.points]
+            ys = [p[1] for p in self.points]
+            self._bbox = (min(xs), min(ys), max(xs), max(ys))
+        return self._bbox
+
+    def crosses(self, other: 'Path') -> bool:
+        """Check if this path crosses another path."""
+        # Quick bounding box check first
+        if not self._bboxes_overlap(self.bbox, other.bbox):
+            return False
+
+        # Check all segment pairs for intersections
+        for i in range(len(self.points) - 1):
+            seg1_start = self.points[i]
+            seg1_end = self.points[i + 1]
+
+            for j in range(len(other.points) - 1):
+                seg2_start = other.points[j]
+                seg2_end = other.points[j + 1]
+
+                if line_segments_intersect(seg1_start, seg1_end, seg2_start, seg2_end):
+                    return True
+
+        return False
+
+    def _bboxes_overlap(self, bbox1: Tuple[int, int, int, int],
+                       bbox2: Tuple[int, int, int, int]) -> bool:
+        """Check if two bounding boxes overlap."""
+        min_x1, min_y1, max_x1, max_y1 = bbox1
+        min_x2, min_y2, max_x2, max_y2 = bbox2
+
+        return not (max_x1 < min_x2 or max_x2 < min_x1 or
+                   max_y1 < min_y2 or max_y2 < min_y1)
+
+
+class GridSpatialIndex:
+    """
+    Grid-based spatial index to replace Shapely's STRtree.
+    Partitions space into grid cells and maintains lists of paths per cell.
+    """
+
+    def __init__(self, cell_size: int = 10):
+        """Initialize with specified grid cell size."""
+        self.cell_size = cell_size
+        self.grid = defaultdict(list)  # {(grid_x, grid_y): [path_indices]}
+        self.paths = []  # List of Path objects
+
+    def insert(self, path: Path) -> int:
+        """Insert a path and return its index."""
+        path_idx = len(self.paths)
+        self.paths.append(path)
+
+        # Add path to all grid cells it intersects
+        min_x, min_y, max_x, max_y = path.bbox
+
+        start_grid_x = min_x // self.cell_size
+        end_grid_x = max_x // self.cell_size
+        start_grid_y = min_y // self.cell_size
+        end_grid_y = max_y // self.cell_size
+
+        for grid_x in range(start_grid_x, end_grid_x + 1):
+            for grid_y in range(start_grid_y, end_grid_y + 1):
+                self.grid[(grid_x, grid_y)].append(path_idx)
+
+        return path_idx
+
+    def query(self, path: Path) -> List[int]:
+        """Query for paths that might intersect with the given path."""
+        candidates = set()
+        min_x, min_y, max_x, max_y = path.bbox
+
+        start_grid_x = min_x // self.cell_size
+        end_grid_x = max_x // self.cell_size
+        start_grid_y = min_y // self.cell_size
+        end_grid_y = max_y // self.cell_size
+
+        for grid_x in range(start_grid_x, end_grid_x + 1):
+            for grid_y in range(start_grid_y, end_grid_y + 1):
+                candidates.update(self.grid.get((grid_x, grid_y), []))
+
+        return list(candidates)
 
 
 # Layer definitions for (x,y,z) coordinate system
@@ -183,56 +330,24 @@ class AStarPathfinder:
     
     def _would_create_crossing(self, current: Tuple[int, int, int], neighbor: Tuple[int, int, int], tier: RoutingTier) -> bool:
         """
-        Fast crossing check using Shapely with spatial indexing for performance.
+        Fast crossing check using unified CrossingDetector with sweep line algorithm.
         """
         # Only check crossings on the same layer
         if current[2] != neighbor[2]:
             return False  # Layer transitions don't create crossings
-        
+
         layer = current[2]
-        
-        # Check if we have recorded paths on this layer
-        if not hasattr(tier, 'routed_paths'):
-            return False
-            
-        if layer not in tier.routed_paths:
-            return False
-        
+
         # Convert current and neighbor to 2D coordinates
         current_2d = (current[0], current[1])
         neighbor_2d = (neighbor[0], neighbor[1])
-        
+
         # Early exit: if endpoints are the same, no crossing
         if current_2d == neighbor_2d:
             return False
-        
-        # Create LineString for the proposed segment
-        proposed_segment = LineString([current_2d, neighbor_2d])
-        
-        # Use spatial index for fast collision detection if available
-        if (hasattr(tier, 'spatial_indexes') and 
-            layer in tier.spatial_indexes and 
-            tier.spatial_indexes[layer] is not None):
-            
-            # Query spatial index for potential intersections
-            candidate_indices = tier.spatial_indexes[layer].query(proposed_segment)
-            
-            # Get actual LineString objects and check crossings
-            for idx in candidate_indices:
-                if idx < len(tier.linestring_cache[layer]):
-                    candidate_line = tier.linestring_cache[layer][idx]
-                    if proposed_segment.crosses(candidate_line):
-                        return True
-        else:
-            # Fallback to checking against all existing paths
-            for existing_path in tier.routed_paths[layer]:
-                if len(existing_path) < 2:
-                    continue
-                existing_linestring = LineString(existing_path)
-                if proposed_segment.crosses(existing_linestring):
-                    return True
-        
-        return False
+
+        # Use unified crossing detector for fast segment checking
+        return tier.crossing_detector.check_segment_crossing(current_2d, neighbor_2d, layer)
 
 
 
@@ -381,58 +496,42 @@ class StraightLineRouter:
 
     def _point_creates_crossing(self, point: Tuple[int, int], tier: RoutingTier, layer: int,
                               point_index: int, full_path: List[Tuple[int, int]]) -> bool:
-        """Quick check if a point would create crossings."""
-        if not hasattr(tier, 'routed_paths') or layer not in tier.routed_paths:
-            return False
-            
-        # Only check segments involving this point
+        """Quick check if a point would create crossings using unified crossing detector."""
+        # Check segments involving this point
         if point_index > 0:
             prev_point = full_path[point_index - 1]
-            segment = LineString([prev_point, point])
-            
-            for existing_path in tier.routed_paths[layer]:
-                if len(existing_path) >= 2:
-                    existing_line = LineString(existing_path)
-                    if segment.crosses(existing_line):
-                        return True
-                        
+            if tier.crossing_detector.check_segment_crossing(prev_point, point, layer):
+                return True
+
         if point_index < len(full_path) - 1:
             next_point = full_path[point_index + 1]
-            segment = LineString([point, next_point])
-            
-            for existing_path in tier.routed_paths[layer]:
-                if len(existing_path) >= 2:
-                    existing_line = LineString(existing_path)
-                    if segment.crosses(existing_line):
-                        return True
-        
+            if tier.crossing_detector.check_segment_crossing(point, next_point, layer):
+                return True
+
         return False
 
 
 
 
-    def _validate_path_crossings_quick(self, path_3d: List[Tuple[int, int, int]], 
+    def _validate_path_crossings_quick(self, path_3d: List[Tuple[int, int, int]],
                                      tier: RoutingTier) -> bool:
-        """Quick crossing validation without full path validation overhead."""
+        """Quick crossing validation using unified CrossingDetector."""
         # Group by layer for efficient checking
         layer_paths = {}
         for x, y, z in path_3d:
             if z not in layer_paths:
                 layer_paths[z] = []
             layer_paths[z].append((x, y))
-        
-        # Check each layer's segments
+
+        # Check each layer's segments using unified crossing detector
         for layer, path_points in layer_paths.items():
             if len(path_points) < 2:
                 continue
-                
-            if hasattr(tier, 'routed_paths') and layer in tier.routed_paths:
-                path_line = LineString(path_points)
-                for existing_path in tier.routed_paths[layer]:
-                    if len(existing_path) >= 2:
-                        existing_line = LineString(existing_path)
-                        if path_line.crosses(existing_line):
-                            return False
+
+            # Use unified crossing detector
+            if tier.crossing_detector.would_create_crossing(path_points, layer):
+                return False
+
         return True
 
     def _line_segments_intersect(self, seg1_start: Tuple[int, int], seg1_end: Tuple[int, int],
@@ -442,117 +541,39 @@ class StraightLineRouter:
         """
         return line_segments_intersect(seg1_start, seg1_end, seg2_start, seg2_end)
 
-    def _check_path_crossings(self, new_path_points: List[Tuple[int, int]], 
-                             tier: RoutingTier, layer: int) -> List[int]:
-        """
-        Check for line segment crossings using Shapely with spatial indexing for performance.
-        
-        Returns list of indices in new_path_points where crossings occur.
-        This implements the HAL paper's crossing detection for preventing path intersections.
-        """
-        crossing_indices = []
-        
-        if not hasattr(tier, 'routed_paths'):
-            tier.routed_paths = {}  # {layer: [path_segments]}
-            tier.spatial_indexes = {}  # {layer: STRtree}
-            tier.linestring_cache = {}  # {layer: [LineString objects]}
-        
-        if layer not in tier.routed_paths:
-            return crossing_indices  # No existing paths on this layer
-        
-        # Create LineString for the new path
-        if len(new_path_points) < 2:
-            return crossing_indices
-        
-        new_linestring = LineString(new_path_points)
-        
-        # Use spatial index for fast collision detection if available
-        if (hasattr(tier, 'spatial_indexes') and 
-            layer in tier.spatial_indexes and 
-            tier.spatial_indexes[layer] is not None):
-            
-            # Query spatial index for potential intersections
-            candidate_indices = tier.spatial_indexes[layer].query(new_linestring)
-            
-            # Get actual LineString objects and check crossings
-            for idx in candidate_indices:
-                if idx < len(tier.linestring_cache[layer]):
-                    candidate_line = tier.linestring_cache[layer][idx]
-                    if new_linestring.crosses(candidate_line):
-                        # Find which segments are involved in crossing
-                        for i in range(len(new_path_points) - 1):
-                            segment = LineString([new_path_points[i], new_path_points[i + 1]])
-                            if segment.crosses(candidate_line):
-                                if i not in crossing_indices:
-                                    crossing_indices.append(i)
-                                if (i + 1) not in crossing_indices:
-                                    crossing_indices.append(i + 1)
-        else:
-            # Fallback to checking against all existing paths
-            for existing_path in tier.routed_paths[layer]:
-                if len(existing_path) < 2:
-                    continue
-                existing_linestring = LineString(existing_path)
-                if new_linestring.crosses(existing_linestring):
-                    # Find which segments are involved in crossing
-                    for i in range(len(new_path_points) - 1):
-                        segment = LineString([new_path_points[i], new_path_points[i + 1]])
-                        if segment.crosses(existing_linestring):
-                            if i not in crossing_indices:
-                                crossing_indices.append(i)
-                            if (i + 1) not in crossing_indices:
-                                crossing_indices.append(i + 1)
-        
-        return sorted(crossing_indices)
+    # NOTE: _check_path_crossings method removed - replaced by unified CrossingDetector
 
     def _record_routed_path(self, tier: RoutingTier, path_3d: List[Tuple[int, int, int]]):
-        """Record a successfully routed path for future crossing detection with spatial indexing."""
-        if not hasattr(tier, 'routed_paths'):
-            tier.routed_paths = {}
-            tier.spatial_indexes = {}
-            tier.linestring_cache = {}
-        
+        """Record a successfully routed path using unified CrossingDetector."""
         # Group path points by layer
         layer_paths = {}
         for x, y, z in path_3d:
             if z not in layer_paths:
                 layer_paths[z] = []
             layer_paths[z].append((x, y))
-        
-        # For visualization: store the complete 3D path as a single entity
-        # Use the primary layer (most common layer in the path) as the key
+
+        # Add path to unified crossing detector for each layer
+        for layer, path_points in layer_paths.items():
+            if len(path_points) > 1:  # Only record if there are actual segments
+                tier.crossing_detector.add_path(path_points, layer)
+
+        # Legacy storage for visualization (keep for compatibility)
+        if not hasattr(tier, 'routed_paths'):
+            tier.routed_paths = {}
+
+        # Find the primary layer (layer with most points) for visualization
         layer_counts = {}
         for x, y, z in path_3d:
             layer_counts[z] = layer_counts.get(z, 0) + 1
 
-        # Find the primary layer (layer with most points)
         primary_layer = max(layer_counts, key=layer_counts.get) if layer_counts else 0
 
-        # Store complete 3D path under primary layer for visualization (preserves layer info for bumps)
+        # Store complete 3D path under primary layer for visualization
         if primary_layer not in tier.routed_paths:
             tier.routed_paths[primary_layer] = []
 
-        # Store the complete 3D path to preserve layer transition information
         if len(path_3d) > 1:
             tier.routed_paths[primary_layer].append(path_3d)
-
-        # For crossing detection: still maintain layer-specific spatial indexing
-        for layer, path_points in layer_paths.items():
-            if layer not in tier.linestring_cache:
-                tier.linestring_cache[layer] = []
-
-            if len(path_points) > 1:  # Only record if there are actual segments
-                # Create LineString and add to cache
-                linestring = LineString(path_points)
-                tier.linestring_cache[layer].append(linestring)
-
-                # Rebuild spatial index with all LineStrings for this layer
-                if len(tier.linestring_cache[layer]) > 1:
-                    tier.spatial_indexes[layer] = STRtree(tier.linestring_cache[layer])
-
-                # Clear spatial grid cache for this layer to force rebuild
-                if hasattr(tier, 'spatial_grid') and layer in tier.spatial_grid:
-                    del tier.spatial_grid[layer]
 
     def _bresenham_line(self, x1: int, y1: int, x2: int, y2: int) -> List[Tuple[int, int]]:
         """Bresenham's line algorithm for integer coordinates."""
@@ -1171,55 +1192,29 @@ class RoutingEngine:
 
     def _validate_full_path_crossings(self, full_path: List[Tuple[int, int, int]], tier: RoutingTier) -> bool:
         """
-        Validate that the full path (including layer transitions) doesn't create crossings using Shapely.
-        
+        Validate that the full path doesn't create crossings using unified CrossingDetector.
+
         This is critical for higher tier routing where composite paths are created from
         multiple segments and layer transitions.
         """
         if not full_path or len(full_path) < 2:
             return True
-        
+
         # Group path points by layer for crossing detection
         layer_paths = {}
         for x, y, z in full_path:
             if z not in layer_paths:
                 layer_paths[z] = []
             layer_paths[z].append((x, y))
-        
-        # Check each layer's path segments for crossings
+
+        # Check each layer's path segments using unified crossing detector
         for layer, path_points in layer_paths.items():
             if len(path_points) < 2:
                 continue  # No segments to check
-                
-            # Create LineString for this layer's path
-            new_linestring = LineString(path_points)
-            
-            # Check for existing routed paths on this layer
-            if not hasattr(tier, 'routed_paths') or layer not in tier.routed_paths:
-                continue  # No existing paths to check against
-            
-            # Use spatial index if available, otherwise fallback to direct checking
-            if (hasattr(tier, 'spatial_indexes') and 
-                layer in tier.spatial_indexes and 
-                tier.spatial_indexes[layer] is not None):
-                
-                # Query spatial index for potential intersections
-                candidate_indices = tier.spatial_indexes[layer].query(new_linestring)
-                
-                # Get actual LineString objects and check crossings
-                for idx in candidate_indices:
-                    if idx < len(tier.linestring_cache[layer]):
-                        candidate_line = tier.linestring_cache[layer][idx]
-                        if new_linestring.crosses(candidate_line):
-                            return False  # Found crossing - reject path
-            else:
-                # Fallback to checking against all existing paths
-                for existing_path in tier.routed_paths[layer]:
-                    if len(existing_path) < 2:
-                        continue
-                    existing_linestring = LineString(existing_path)
-                    if new_linestring.crosses(existing_linestring):
-                        return False  # Found crossing - reject path
-        
+
+            # Use unified crossing detector
+            if tier.crossing_detector.would_create_crossing(path_points, layer):
+                return False  # Found crossing - reject path
+
         return True  # No crossings found - path is valid
 

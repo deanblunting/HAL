@@ -9,7 +9,6 @@ setup(
         "matplotlib>=3.8.0",
         "plotly>=5.0.0",
         "scikit-learn>=1.4.0",
-        "shapely>=2.0.0",
     ],
     python_requires=">=3.8",
 )

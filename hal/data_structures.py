@@ -26,10 +26,14 @@ class RoutingTier:
     tsvs: Set[Tuple[int, int]]  # through-silicon via coordinates
     bump_transitions: Dict[Tuple[int, int], int]  # edge -> bump bond transitions
     occupied_coords: Set[Tuple[int, int, int]] = field(default_factory=set)  # 3D coordinates that are occupied
-    
+    crossing_detector: 'CrossingDetector' = field(default_factory=lambda: None)  # unified crossing detection
+
     def __post_init__(self):
         if self.grid is None:
             self.grid = np.zeros((100, 100, 2), dtype=bool)  # default grid dimensions
+        if self.crossing_detector is None:
+            from .crossing_detector import CrossingDetector
+            self.crossing_detector = CrossingDetector()
     
     def is_occupied(self, x: int, y: int, layer: int = 0) -> bool:
         """Determine if coordinate (x,y,z) is occupied using simple coordinate-based tracking."""

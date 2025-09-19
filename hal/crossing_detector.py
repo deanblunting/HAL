@@ -74,15 +74,10 @@ class Segment:
 
     def intersects_segment(self, other: 'Segment') -> Optional[Tuple[float, float]]:
         """Check if this segment intersects with another, return intersection point or True for overlaps."""
-        # Use our existing line_segments_intersect function logic first
-        from .routing import line_segments_intersect
-
-        if line_segments_intersect(self.p1, self.p2, other.p1, other.p2):
-            # Try to calculate actual intersection point
-            intersection_point = self._calculate_intersection(other)
-            # For collinear overlaps, _calculate_intersection returns None
-            # but we still want to indicate that segments intersect
-            return intersection_point if intersection_point is not None else (0.0, 0.0)  # Dummy point for overlap
+        # Use direct intersection calculation
+        intersection_point = self._calculate_intersection(other)
+        if intersection_point is not None:
+            return intersection_point
 
         # Check for endpoint sharing only - this is NOT considered a crossing for routing
         # But identical segments or overlapping segments ARE crossings

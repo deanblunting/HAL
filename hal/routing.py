@@ -10,173 +10,10 @@ from collections import defaultdict, deque
 
 from .data_structures import RoutingTier, RoutingResult, RouteSegment
 from .config import HALConfig
+from .crossing_detector import CrossingDetector
 
 
-def orientation(p: Tuple[int, int], q: Tuple[int, int], r: Tuple[int, int]) -> int:
-    """
-    Find orientation of ordered triplet (p, q, r).
-    Returns:
-        0: Colinear points
-        1: Clockwise orientation
-        2: Counterclockwise orientation
-    """
-    val = (q[1] - p[1]) * (r[0] - q[0]) - (q[0] - p[0]) * (r[1] - q[1])
-    if val == 0:
-        return 0  # Colinear
-    return 1 if val > 0 else 2  # Clockwise or counterclockwise
 
-
-def on_segment(p: Tuple[int, int], q: Tuple[int, int], r: Tuple[int, int]) -> bool:
-    """
-    Check if point q lies on line segment pr (given that p, q, r are colinear).
-    """
-    return (q[0] <= max(p[0], r[0]) and q[0] >= min(p[0], r[0]) and
-            q[1] <= max(p[1], r[1]) and q[1] >= min(p[1], r[1]))
-
-
-def line_segments_intersect(seg1_start: Tuple[int, int], seg1_end: Tuple[int, int],
-                           seg2_start: Tuple[int, int], seg2_end: Tuple[int, int]) -> bool:
-    """
-    Mathematical line segment intersection detection using orientation method.
-    Returns True if the two line segments intersect, False otherwise.
-    Endpoint sharing is allowed and does not count as a crossing.
-    """
-    # Check for endpoint sharing - this is allowed (paths can touch at endpoints)
-    if (seg1_start == seg2_start or seg1_start == seg2_end or
-        seg1_end == seg2_start or seg1_end == seg2_end):
-        return False  # Endpoint sharing is not a crossing
-
-    p1, q1 = seg1_start, seg1_end
-    p2, q2 = seg2_start, seg2_end
-
-    # Find the four orientations needed for general and special cases
-    o1 = orientation(p1, q1, p2)
-    o2 = orientation(p1, q1, q2)
-    o3 = orientation(p2, q2, p1)
-    o4 = orientation(p2, q2, q1)
-
-    # General case: segments intersect if orientations differ
-    if o1 != o2 and o3 != o4:
-        return True
-
-    # Special cases for colinear points
-    # p1, q1 and p2 are colinear and p2 lies on segment p1q1
-    if o1 == 0 and on_segment(p1, p2, q1):
-        return True
-
-    # p1, q1 and q2 are colinear and q2 lies on segment p1q1
-    if o2 == 0 and on_segment(p1, q2, q1):
-        return True
-
-    # p2, q2 and p1 are colinear and p1 lies on segment p2q2
-    if o3 == 0 and on_segment(p2, p1, q2):
-        return True
-
-    # p2, q2 and q1 are colinear and q1 lies on segment p2q2
-    if o4 == 0 and on_segment(p2, q1, q2):
-        return True
-
-    return False  # Doesn't fall in any of the above cases
-
-
-class Path:
-    """
-    Lightweight replacement for Shapely LineString.
-    Stores a sequence of 2D points and provides intersection testing.
-    """
-
-    def __init__(self, points: List[Tuple[int, int]]):
-        """Initialize path with list of (x, y) points."""
-        if len(points) < 2:
-            raise ValueError("Path must have at least 2 points")
-        self.points = points
-        self._bbox = None
-
-    @property
-    def bbox(self) -> Tuple[int, int, int, int]:
-        """Get bounding box as (min_x, min_y, max_x, max_y)."""
-        if self._bbox is None:
-            xs = [p[0] for p in self.points]
-            ys = [p[1] for p in self.points]
-            self._bbox = (min(xs), min(ys), max(xs), max(ys))
-        return self._bbox
-
-    def crosses(self, other: 'Path') -> bool:
-        """Check if this path crosses another path."""
-        # Quick bounding box check first
-        if not self._bboxes_overlap(self.bbox, other.bbox):
-            return False
-
-        # Check all segment pairs for intersections
-        for i in range(len(self.points) - 1):
-            seg1_start = self.points[i]
-            seg1_end = self.points[i + 1]
-
-            for j in range(len(other.points) - 1):
-                seg2_start = other.points[j]
-                seg2_end = other.points[j + 1]
-
-                if line_segments_intersect(seg1_start, seg1_end, seg2_start, seg2_end):
-                    return True
-
-        return False
-
-    def _bboxes_overlap(self, bbox1: Tuple[int, int, int, int],
-                       bbox2: Tuple[int, int, int, int]) -> bool:
-        """Check if two bounding boxes overlap."""
-        min_x1, min_y1, max_x1, max_y1 = bbox1
-        min_x2, min_y2, max_x2, max_y2 = bbox2
-
-        return not (max_x1 < min_x2 or max_x2 < min_x1 or
-                   max_y1 < min_y2 or max_y2 < min_y1)
-
-
-class GridSpatialIndex:
-    """
-    Grid-based spatial index to replace Shapely's STRtree.
-    Partitions space into grid cells and maintains lists of paths per cell.
-    """
-
-    def __init__(self, cell_size: int = 10):
-        """Initialize with specified grid cell size."""
-        self.cell_size = cell_size
-        self.grid = defaultdict(list)  # {(grid_x, grid_y): [path_indices]}
-        self.paths = []  # List of Path objects
-
-    def insert(self, path: Path) -> int:
-        """Insert a path and return its index."""
-        path_idx = len(self.paths)
-        self.paths.append(path)
-
-        # Add path to all grid cells it intersects
-        min_x, min_y, max_x, max_y = path.bbox
-
-        start_grid_x = min_x // self.cell_size
-        end_grid_x = max_x // self.cell_size
-        start_grid_y = min_y // self.cell_size
-        end_grid_y = max_y // self.cell_size
-
-        for grid_x in range(start_grid_x, end_grid_x + 1):
-            for grid_y in range(start_grid_y, end_grid_y + 1):
-                self.grid[(grid_x, grid_y)].append(path_idx)
-
-        return path_idx
-
-    def query(self, path: Path) -> List[int]:
-        """Query for paths that might intersect with the given path."""
-        candidates = set()
-        min_x, min_y, max_x, max_y = path.bbox
-
-        start_grid_x = min_x // self.cell_size
-        end_grid_x = max_x // self.cell_size
-        start_grid_y = min_y // self.cell_size
-        end_grid_y = max_y // self.cell_size
-
-        for grid_x in range(start_grid_x, end_grid_x + 1):
-            for grid_y in range(start_grid_y, end_grid_y + 1):
-                candidates.update(self.grid.get((grid_x, grid_y), []))
-
-        return list(candidates)
 
 
 # Layer definitions for (x,y,z) coordinate system
@@ -541,12 +378,6 @@ class StraightLineRouter:
 
         return True
 
-    def _line_segments_intersect(self, seg1_start: Tuple[int, int], seg1_end: Tuple[int, int],
-                                seg2_start: Tuple[int, int], seg2_end: Tuple[int, int]) -> bool:
-        """
-        Check if two line segments intersect using Shapely.
-        """
-        return line_segments_intersect(seg1_start, seg1_end, seg2_start, seg2_end)
 
     # NOTE: _check_path_crossings method removed - replaced by unified CrossingDetector
 
@@ -921,46 +752,44 @@ class RoutingEngine:
         
         # STEP 1: HAL Paper - Try straight-line routing WITH bump transitions
         for layer in range(num_layers):
-            if self._is_layer_available_for_routing(tier, layer):
-                # Straight-line router already handles bumps internally via _route_with_minimum_bumps
-                path = self.straight_router.route_straight_line(start_pos, end_pos, tier, layer=layer)
-                if path:
-                    # Create full path with TSV connections to tier 0
-                    full_path = self._create_path_with_layer_transitions(start_pos, end_pos, path, layer)
-                    
-                    # Validate path doesn't create crossings (skip for tier 0)
-                    if tier.tier_id == 0 or self._validate_full_path_crossings(full_path, tier):
-                        # Count layer transitions directly (straight-line router already produced bumps)
-                        bump_count = self._count_layer_transitions(full_path)
-                        if bump_count <= self.config.max_bump_transitions:
-                            tier.bump_transitions[edge] = bump_count
-                            self._mark_layer_usage(tier, layer)
-                            print(f"Tier {tier_id}: Straight-line successfully routed edge {edge} on layer {layer}")
-                            return full_path
+            # Straight-line router already handles bumps internally via _route_with_minimum_bumps
+            path = self.straight_router.route_straight_line(start_pos, end_pos, tier, layer=layer)
+            if path:
+                # Create full path with TSV connections to tier 0
+                full_path = self._create_path_with_layer_transitions(start_pos, end_pos, path, layer)
+
+                # Validate path doesn't create crossings (skip for tier 0)
+                if tier.tier_id == 0 or self._validate_full_path_crossings(full_path, tier):
+                    # Count layer transitions directly (straight-line router already produced bumps)
+                    bump_count = self.bump_manager.count_bumps_in_path(full_path)
+                    if bump_count <= self.config.max_bump_transitions:
+                        tier.bump_transitions[edge] = bump_count
+                        self._mark_layer_usage(tier, layer)
+                        print(f"Tier {tier_id}: Straight-line successfully routed edge {edge} on layer {layer}")
+                        return full_path
 
         # STEP 2: HAL Paper - Try A* pathfinding WITHOUT additional bumps
         print(f"Tier {tier_id}: Straight-line failed for edge {edge}, trying A* pathfinding...")
         
         # Try A* on each available layer (layer 0 first, then layer 1)
         for layer in range(num_layers):
-            if self._is_layer_available_for_routing(tier, layer):
-                # Convert 2D positions to 3D for A* pathfinder
-                start_3d = (start_pos[0], start_pos[1], layer)
-                end_3d = (end_pos[0], end_pos[1], layer)
-                
-                # Use A* pathfinder to route around obstructions (no bumps)
-                astar_path = self.pathfinder.find_path(start_3d, end_3d, tier)
-                if astar_path:
-                    # Create full path with TSV connections to tier 0
-                    full_path = self._create_path_with_layer_transitions(start_pos, end_pos, astar_path, layer)
-                    
-                    # Validate A* path doesn't create crossings (skip for tier 0)
-                    if tier.tier_id == 0 or self._validate_full_path_crossings(full_path, tier):
-                        # A* should not use bump transitions - only TSV transitions
-                        tier.bump_transitions[edge] = 0  # A* routing has no bumps
-                        self._mark_layer_usage(tier, layer)
-                        print(f"Tier {tier_id}: A* successfully routed edge {edge} on layer {layer}")
-                        return full_path
+            # Convert 2D positions to 3D for A* pathfinder
+            start_3d = (start_pos[0], start_pos[1], layer)
+            end_3d = (end_pos[0], end_pos[1], layer)
+
+            # Use A* pathfinder to route around obstructions (no bumps)
+            astar_path = self.pathfinder.find_path(start_3d, end_3d, tier)
+            if astar_path:
+                # Create full path with TSV connections to tier 0
+                full_path = self._create_path_with_layer_transitions(start_pos, end_pos, astar_path, layer)
+
+                # Validate A* path doesn't create crossings (skip for tier 0)
+                if tier.tier_id == 0 or self._validate_full_path_crossings(full_path, tier):
+                    # A* should not use bump transitions - only TSV transitions
+                    tier.bump_transitions[edge] = 0  # A* routing has no bumps
+                    self._mark_layer_usage(tier, layer)
+                    print(f"Tier {tier_id}: A* successfully routed edge {edge} on layer {layer}")
+                    return full_path
 
         # STEP 3: HAL Paper - Both straight-line and A* failed, escalate to next tier
         print(f"Tier {tier_id}: Both straight-line and A* failed for edge {edge} - will escalate to next tier")
@@ -1024,7 +853,7 @@ class RoutingEngine:
                                   node_positions: Dict[int, Tuple[int, int]]) -> Dict[str, float]:
         """Calculate routing quality metrics with enhanced bump bond cost analysis."""
         if not edge_routes:
-            return {'tiers': max(len(tiers), 1), 'length': 0.0, 'bumps': 0.0, 'tsvs': 0.0, 'qecc_weight': 0.0}
+            return {'tiers': max(len(tiers), 1), 'length': 0.0, 'bumps': 0.0, 'tsvs': 0.0}
 
         total_length = 0.0
         total_bumps = 0
@@ -1065,74 +894,16 @@ class RoutingEngine:
         total_tsvs = sum(edge_tsvs.values())
         avg_tsvs = total_tsvs / num_edges if num_edges > 0 else 0.0
 
-        # Calculate QECC weight (average node degree)
-        qecc_weight = self._calculate_qecc_weight(edge_routes, node_positions)
-
         return {
             'tiers': len(tiers),
             'length': (total_length / num_edges / self.config.qubit_spacing) if num_edges > 0 else 0.0,
             'bumps': total_bumps / num_edges if num_edges > 0 else 0.0,  # Average bumps per edge
-            'tsvs': avg_tsvs,        # Average TSVs per edge on higher tiers
-            'qecc_weight': qecc_weight  # Average node degree (QECC weight)
+            'tsvs': avg_tsvs        # Average TSVs per edge on higher tiers
         }
 
-    def _calculate_qecc_weight(self, edge_routes: Dict, node_positions: Dict[int, Tuple[int, int]]) -> float:
-        """
-        Calculate the QECC weight (average node degree) from the routed connectivity graph.
-
-        The QECC weight indicates how many other qubits each qubit is connected to on average.
-        This is a key metric for understanding code connectivity density:
-        - Weight 4: Surface codes, low-weight radial codes
-        - Weight 6: Many bicycle codes, tile codes
-        - Weight 8+: High-weight tile codes, complex qLDPC codes
-
-        Args:
-            edge_routes: Dictionary of edge -> routing path
-            node_positions: Dictionary of node -> grid position
-
-        Returns:
-            Average node degree (QECC weight)
-        """
-        if not edge_routes or not node_positions:
-            return 0.0
-
-        # Count degree for each node
-        node_degrees = {}
-        for node in node_positions.keys():
-            node_degrees[node] = 0
-
-        # Count edges connected to each node
-        for edge in edge_routes.keys():
-            node1, node2 = edge
-            if node1 in node_degrees:
-                node_degrees[node1] += 1
-            if node2 in node_degrees:
-                node_degrees[node2] += 1
-
-        # Calculate average degree (QECC weight)
-        if node_degrees:
-            total_degree = sum(node_degrees.values())
-            return total_degree / len(node_degrees)
-        else:
-            return 0.0
 
 
-    def _get_tier_from_z_level(self, z_level: int) -> int:
-        """Get tier ID from z-level coordinate."""
-        # Assuming 2 layers per tier
-        return z_level // 2
 
-    def _count_layer_transitions(self, path: List[Tuple[int, int, int]]) -> int:
-        """Count the number of layer transitions (bump bonds) in a 3D path."""
-        if len(path) <= 1:
-            return 0
-        
-        bump_count = 0
-        for i in range(len(path) - 1):
-            if path[i][2] != path[i + 1][2]:  # Layer change = bump transition
-                bump_count += 1
-        
-        return bump_count
 
     def _calculate_straight_line_distance(self, edge: Tuple[int, int],
                                         node_positions: Dict[int, Tuple[int, int]]) -> float:
@@ -1156,9 +927,6 @@ class RoutingEngine:
 
 
 
-    def _is_layer_available_for_routing(self, tier: RoutingTier, layer: int) -> bool:
-        """Check if layer exists (FIFO processing doesn't need capacity limits)."""
-        return layer < tier.grid.shape[2]
 
     def _mark_layer_usage(self, tier: RoutingTier, layer: int):
         """Mark layer as having increased usage for capacity tracking."""

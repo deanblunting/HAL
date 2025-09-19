@@ -29,13 +29,26 @@ class CrossingDetector:
         Returns:
             True if the path would create a crossing, False otherwise
         """
+        return len(self.get_crossing_points(proposed_path, layer)) > 0
+
+    def get_crossing_points(self, proposed_path: List[Tuple[int, int]], layer: int) -> List[Tuple[float, float]]:
+        """
+        Get intersection points where a proposed path would cross existing paths.
+
+        Args:
+            proposed_path: List of (x, y) coordinates forming a path
+            layer: Layer ID to check on
+
+        Returns:
+            List of (x, y) intersection coordinates where bump transitions should occur
+        """
         if len(proposed_path) < 2:
-            return False
+            return []
 
         # Get existing segments on this layer
         existing_segments = self.layer_segments[layer]
         if not existing_segments:
-            return False  # No existing paths to cross
+            return []  # No existing paths to cross
 
         # Create segments from proposed path
         proposed_segments = []
@@ -47,16 +60,38 @@ class CrossingDetector:
         valid_proposed = [seg for seg in proposed_segments if seg[0] != seg[1]]
 
         if not valid_existing or not valid_proposed:
-            return False
+            return []
 
         # Combine all segments and use library to check for intersections
         all_segments = valid_existing + valid_proposed
 
         # Use the library's Bentley-Ottmann algorithm
         intersections = lsi.bentley_ottman(all_segments)
-        # If there are any intersections, we have a crossing
-        # Note: The library only reports actual intersections, not endpoint sharing
-        return len(intersections) > 0
+
+        # Extract coordinates from Intersection objects
+        intersection_points = []
+        for intersection in intersections:
+            try:
+                # The intersection object has a point attribute with x, y coordinates
+                if hasattr(intersection, 'point'):
+                    point = intersection.point
+                    if hasattr(point, 'x') and hasattr(point, 'y'):
+                        intersection_points.append((float(point.x), float(point.y)))
+                    else:
+                        # Fallback: try to access as tuple/list
+                        intersection_points.append((float(point[0]), float(point[1])))
+                elif hasattr(intersection, 'x') and hasattr(intersection, 'y'):
+                    # Intersection object directly has x, y attributes
+                    intersection_points.append((float(intersection.x), float(intersection.y)))
+                else:
+                    # Fallback: assume intersection is already a coordinate
+                    intersection_points.append((float(intersection[0]), float(intersection[1])))
+            except (AttributeError, TypeError, IndexError) as e:
+                # Skip malformed intersection objects
+                print(f"Warning: Could not extract coordinates from intersection object: {e}")
+                continue
+
+        return intersection_points
 
     def check_segment_crossing(self, p1: Tuple[int, int], p2: Tuple[int, int], layer: int) -> bool:
         """
@@ -70,24 +105,34 @@ class CrossingDetector:
         Returns:
             True if the segment would create a crossing, False otherwise
         """
+        return len(self.get_segment_crossing_points(p1, p2, layer)) > 0
+
+    def get_segment_crossing_points(self, p1: Tuple[int, int], p2: Tuple[int, int], layer: int) -> List[Tuple[float, float]]:
+        """
+        Get intersection points for a single segment crossing.
+
+        Args:
+            p1: Start point (x, y)
+            p2: End point (x, y)
+            layer: Layer ID to check on
+
+        Returns:
+            List of (x, y) intersection coordinates where bump transitions should occur
+        """
         # Skip crossing detection if points are the same (no segment)
         if p1 == p2:
-            return False
+            return []
 
         # Get existing segments on this layer
         existing_segments = self.layer_segments[layer]
         if not existing_segments:
-            return False
-
-        # Skip degenerate segments
-        if p1 == p2:
-            return False
+            return []
 
         # Filter out degenerate segments from existing
         valid_existing = [seg for seg in existing_segments if seg[0] != seg[1]]
 
         if not valid_existing:
-            return False
+            return []
 
         # Create test segment and combine with existing
         test_segment = (p1, p2)
@@ -95,8 +140,31 @@ class CrossingDetector:
 
         # Use the library to check for intersections
         intersections = lsi.bentley_ottman(all_segments)
-        # If there are intersections, this segment would cross existing ones
-        return len(intersections) > 0
+
+        # Extract coordinates from Intersection objects
+        intersection_points = []
+        for intersection in intersections:
+            try:
+                # The intersection object has a point attribute with x, y coordinates
+                if hasattr(intersection, 'point'):
+                    point = intersection.point
+                    if hasattr(point, 'x') and hasattr(point, 'y'):
+                        intersection_points.append((float(point.x), float(point.y)))
+                    else:
+                        # Fallback: try to access as tuple/list
+                        intersection_points.append((float(point[0]), float(point[1])))
+                elif hasattr(intersection, 'x') and hasattr(intersection, 'y'):
+                    # Intersection object directly has x, y attributes
+                    intersection_points.append((float(intersection.x), float(intersection.y)))
+                else:
+                    # Fallback: assume intersection is already a coordinate
+                    intersection_points.append((float(intersection[0]), float(intersection[1])))
+            except (AttributeError, TypeError, IndexError) as e:
+                # Skip malformed intersection objects
+                print(f"Warning: Could not extract coordinates from intersection object: {e}")
+                continue
+
+        return intersection_points
 
     def add_path(self, confirmed_path: List[Tuple[int, int]], layer: int):
         """

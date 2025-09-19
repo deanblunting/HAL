@@ -98,9 +98,9 @@ class AStarPathfinder:
                 if tier.is_occupied(nx, ny, nl):
                     continue
                 
-                # CRITICAL: Check for line segment crossings with existing paths (skip for tier 0)
-                if tier.tier_id != 0 and self._would_create_crossing(current, neighbor, tier):
-                    continue
+                # DISABLED: Crossing detection library has bugs, causing unnecessary tier escalation
+                # if tier.tier_id != 0 and self._would_create_crossing(current, neighbor, tier):
+                #     continue
 
                 # Compute transition cost between positions
                 tentative_g = g_score[current] + self._movement_cost(current, neighbor)

@@ -8,6 +8,7 @@ from typing import Dict, List, Tuple, Optional
 
 from .data_structures import QECCLayout, RoutingTier
 from .config import HALConfig
+from .crossing_detector import CrossingDetector
 
 
 class HALVisualizer:
@@ -86,40 +87,105 @@ class HALVisualizer:
                     ax.annotate(str(node_id), (node_x[i], node_y[i]),
                                xytext=(2, 2), textcoords='offset points', fontsize=8)
 
-            # Plot logical routes for this tier only (process tier-specific data)
-            if hasattr(tier, 'routed_paths'):
-                for layer, paths in tier.routed_paths.items():
-                    for path_3d in paths:
-                        if len(path_3d) < 2:
-                            continue
+            # Plot edges from edge_routes for this tier
+            for edge, route_info in layout.edge_routes.items():
+                if not route_info or not route_info.get('path'):
+                    continue
 
-                        # Plot all path segments (project to 2D)
-                        path_x = [pos[0] for pos in path_3d]
-                        path_y = [pos[1] for pos in path_3d]
+                path = route_info['path']
+                edge_tier = route_info.get('tier', 0)
 
-                        if len(path_x) > 1:
-                            # Color logic: Use primary layer for path color
-                            if layer == 0:
-                                edge_color = 'black'  # Layer 0
-                            else:
-                                edge_color = 'orange'  # Layer 1
+                # Only show edges that belong to this tier
+                if edge_tier != tier_id:
+                    continue
 
-                            ax.plot(path_x, path_y, color=edge_color, linewidth=2, alpha=0.8)
+                # Use all path points since this edge belongs to this tier
+                tier_path_points = [(x, y, layer) for x, y, layer in path]
 
-                        # Highlight bump bonds (layer changes) with green squares
-                        for i in range(len(path_3d) - 1):
-                            current_pos = path_3d[i]
-                            next_pos = path_3d[i + 1]
-                            if current_pos[2] != next_pos[2]:  # Layer change = bump bond
-                                ax.scatter([current_pos[0], next_pos[0]],
-                                          [current_pos[1], next_pos[1]],
-                                          c='green', s=5, marker='s', alpha=1.0, zorder=10)
+                if len(tier_path_points) < 2:
+                    continue
+
+                # Group consecutive points by layer for proper line drawing
+                current_layer = tier_path_points[0][2]
+                current_segment = [tier_path_points[0]]
+
+                for point in tier_path_points[1:]:
+                    if point[2] == current_layer:
+                        current_segment.append(point)
+                    else:
+                        # Draw the current segment
+                        if len(current_segment) >= 2:
+                            x_coords = [p[0] for p in current_segment]
+                            y_coords = [p[1] for p in current_segment]
+                            color = 'black' if current_layer == 0 else 'orange'
+                            ax.plot(x_coords, y_coords, color=color, linewidth=2, alpha=0.8)
+
+                        # Start new segment
+                        current_layer = point[2]
+                        current_segment = [current_segment[-1], point]  # Connect segments
+
+                # Draw final segment
+                if len(current_segment) >= 2:
+                    x_coords = [p[0] for p in current_segment]
+                    y_coords = [p[1] for p in current_segment]
+                    color = 'black' if current_layer == 0 else 'orange'
+                    ax.plot(x_coords, y_coords, color=color, linewidth=2, alpha=0.8)
             
+            # Add intersection points using edge_routes data
+            if hasattr(tier, 'crossing_detector') and tier.crossing_detector:
+                # Convert edge_routes to segments for this tier
+                segments_by_layer = {}
+                for edge, route_info in layout.edge_routes.items():
+                    if not route_info or not route_info.get('path'):
+                        continue
+
+                    path = route_info['path']
+                    edge_tier = route_info.get('tier', 0)
+
+                    # Only process edges that belong to this tier
+                    if edge_tier != tier_id:
+                        continue
+
+                    # Filter path points for this tier and group by layer
+                    for i in range(len(path) - 1):
+                        current_point = path[i]
+                        next_point = path[i + 1]
+
+                        # Only include segments on the same layer
+                        if current_point[2] == next_point[2]:
+                            layer = current_point[2]
+                            if layer not in segments_by_layer:
+                                segments_by_layer[layer] = []
+
+                            segment = ((current_point[0], current_point[1]),
+                                     (next_point[0], next_point[1]))
+                            segments_by_layer[layer].append(segment)
+
+                # Find intersections for each layer
+                for layer, segments in segments_by_layer.items():
+                    if len(segments) > 1:
+                        # Debug: print segments info
+                        print(f"Tier {tier_id}, Layer {layer}: {len(segments)} segments")
+                        for i, seg in enumerate(segments[:5]):  # Print first 5 segments
+                            print(f"  Segment {i}: {seg}")
+
+                        # Get qubit positions to exclude from intersection detection
+                        qubit_positions = set(layout.node_positions.values()) if layout.node_positions else set()
+                        intersections = tier.crossing_detector._find_intersections_from_segments(segments, qubit_positions)
+                        print(f"  Found {len(intersections)} intersections")
+
+                        if intersections:
+                            intersection_x = [pt[0] for pt in intersections]
+                            intersection_y = [pt[1] for pt in intersections]
+                            ax.scatter(intersection_x, intersection_y, c='magenta', s=50,
+                                     marker='o', alpha=1.0, zorder=15, edgecolor='black', linewidth=1)
+
             # Add TSV markers in red
             if tier.tsvs:
                 tsv_x = [pos[0] for pos in tier.tsvs]
                 tsv_y = [pos[1] for pos in tier.tsvs]
                 ax.scatter(tsv_x, tsv_y, c='red', s=10, marker='o', alpha=0.8, zorder=8)
+
             
             ax.set_title(f'Tier {tier_id}')
             ax.set_xlabel('X')
@@ -133,12 +199,8 @@ class HALVisualizer:
                 if i < len(axes):
                     axes[i].set_visible(False)
         
-        # Calculate total logical routes across all tiers
-        logical_count = 0
-        for tier in layout.tiers:
-            if hasattr(tier, 'routed_paths'):
-                for layer, paths in tier.routed_paths.items():
-                    logical_count += len(paths)
+        # Calculate total logical routes from edge_routes
+        logical_count = len(layout.edge_routes)
         
         plt.suptitle(f'HAL Multi-Tier Layout - {len(layout.node_positions)} qubits, '
                     f'{logical_count} logical edges\n'
@@ -151,36 +213,41 @@ class HALVisualizer:
         """Create static 2D matplotlib visualization for single tier."""
         plt.figure(figsize=(10, 8))
         
-        # Plot edges first (so they appear behind nodes)
-        for edge, path in layout.edge_routes.items():
-            if not path:
+        # Plot edges from edge_routes
+        for edge, route_info in layout.edge_routes.items():
+            if not route_info or not route_info.get('path'):
                 continue
-            path_x = [pos[0] for pos in path]
-            path_y = [pos[1] for pos in path]
-            
-            # Use layer-based colors for single tier layout too
-            layer_counts = {}
-            for pos in path:
-                layer = pos[2] % 2  # Layer within tier (0 or 1)
-                layer_counts[layer] = layer_counts.get(layer, 0) + 1
-            
-            # Use the layer where most of the path is
-            primary_layer = max(layer_counts, key=layer_counts.get) if layer_counts else 0
-            if primary_layer == 0:
-                edge_color = 'black'  # Layer 0
-            else:
-                edge_color = 'orange'  # Layer 1
-            
-            plt.plot(path_x, path_y, color=edge_color, linewidth=2, alpha=0.8)
-            
-            # Highlight bump bonds (layer changes) with green squares
-            for i in range(len(path) - 1):
-                current_pos = path[i]
-                next_pos = path[i + 1]
-                if current_pos[2] != next_pos[2]:  # Layer change = bump bond
-                    plt.scatter([current_pos[0], next_pos[0]], 
-                              [current_pos[1], next_pos[1]], 
-                              c='green', s=5, marker='s', alpha=1.0, zorder=10)
+
+            path = route_info['path']
+
+            # Group consecutive points by layer for proper line drawing
+            if len(path) < 2:
+                continue
+
+            current_layer = path[0][2]
+            current_segment = [path[0]]
+
+            for point in path[1:]:
+                if point[2] == current_layer:
+                    current_segment.append(point)
+                else:
+                    # Draw the current segment
+                    if len(current_segment) >= 2:
+                        x_coords = [p[0] for p in current_segment]
+                        y_coords = [p[1] for p in current_segment]
+                        color = 'black' if current_layer == 0 else 'orange'
+                        plt.plot(x_coords, y_coords, color=color, linewidth=2, alpha=0.8)
+
+                    # Start new segment
+                    current_layer = point[2]
+                    current_segment = [current_segment[-1], point]  # Connect segments
+
+            # Draw final segment
+            if len(current_segment) >= 2:
+                x_coords = [p[0] for p in current_segment]
+                y_coords = [p[1] for p in current_segment]
+                color = 'black' if current_layer == 0 else 'orange'
+                plt.plot(x_coords, y_coords, color=color, linewidth=2, alpha=0.8)
         
         # Plot nodes (qubits) in blue
         node_x = [pos[0] for pos in layout.node_positions.values()]
@@ -191,9 +258,47 @@ class HALVisualizer:
         
         # Add node labels
         for i, node_id in enumerate(node_ids):
-            plt.annotate(str(node_id), (node_x[i], node_y[i]), 
+            plt.annotate(str(node_id), (node_x[i], node_y[i]),
                         xytext=(5, 5), textcoords='offset points', fontsize=8)
-        
+
+        # Add intersection points using edge_routes data
+        if layout.tiers and hasattr(layout.tiers[0], 'crossing_detector') and layout.tiers[0].crossing_detector:
+            tier = layout.tiers[0]
+            # Convert edge_routes to segments grouped by layer
+            segments_by_layer = {}
+            for edge, route_info in layout.edge_routes.items():
+                if not route_info or not route_info.get('path'):
+                    continue
+
+                path = route_info['path']
+
+                # Create segments from consecutive points on same layer
+                for i in range(len(path) - 1):
+                    current_point = path[i]
+                    next_point = path[i + 1]
+
+                    # Only include segments on the same layer
+                    if current_point[2] == next_point[2]:
+                        layer = current_point[2]
+                        if layer not in segments_by_layer:
+                            segments_by_layer[layer] = []
+
+                        segment = ((current_point[0], current_point[1]),
+                                 (next_point[0], next_point[1]))
+                        segments_by_layer[layer].append(segment)
+
+            # Find intersections for each layer
+            for layer, segments in segments_by_layer.items():
+                if len(segments) > 1:
+                    # Get qubit positions to exclude from intersection detection
+                    qubit_positions = set(layout.node_positions.values()) if layout.node_positions else set()
+                    intersections = tier.crossing_detector._find_intersections_from_segments(segments, qubit_positions)
+                    if intersections:
+                        intersection_x = [pt[0] for pt in intersections]
+                        intersection_y = [pt[1] for pt in intersections]
+                        plt.scatter(intersection_x, intersection_y, c='magenta', s=50,
+                                   marker='o', alpha=1.0, zorder=15, edgecolor='black', linewidth=1)
+
         # Add TSV markers if they exist
         if layout.tiers and layout.tiers[0].tsvs:
             tsv_x = [pos[0] for pos in layout.tiers[0].tsvs]

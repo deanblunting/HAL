@@ -1,198 +1,92 @@
 """
-Simplified crossing detection using the line-segment-intersections library.
-Much more reliable and efficient than custom implementation.
+Intersection detection using the bentley_ottmann library.
 """
 
-import linesegmentintersections as lsi
-from typing import List, Tuple, Set, Dict, Optional, Union
-from collections import defaultdict
+from bentley_ottmann.core.base import sweep
+from ground.base import get_context
+from typing import List, Tuple
 
 
 class CrossingDetector:
     """
-    Simplified crossing detection using the line-segment-intersections library.
-    Much more reliable and efficient than custom implementation.
+    Intersection detection using the bentley_ottmann library.
+    Only contains methods needed for visualization intersection detection.
     """
 
     def __init__(self):
         """Initialize crossing detector."""
-        self.layer_segments = defaultdict(list)  # {layer_id: [list of ((x1,y1), (x2,y2)) tuples]}
+        self.context = get_context()
+        self.Point = self.context.point_cls
+        self.Segment = self.context.segment_cls
 
-    def would_create_crossing(self, proposed_path: List[Tuple[int, int]], layer: int) -> bool:
+    def _find_intersections_from_segments(self, segments: List[Tuple[Tuple[int, int], Tuple[int, int]]],
+                                          qubit_positions: set = None) -> List[Tuple[float, float]]:
         """
-        Check if a proposed path would cross existing paths on the given layer.
+        Find intersections from a list of line segments, excluding qubit positions.
 
         Args:
-            proposed_path: List of (x, y) coordinates forming a path
-            layer: Layer ID to check on
+            segments: List of line segments ((x1,y1), (x2,y2))
+            qubit_positions: Set of (x, y) qubit positions to exclude from intersection detection
 
         Returns:
-            True if the path would create a crossing, False otherwise
+            List of (x, y) intersection coordinates
         """
-        return len(self.get_crossing_points(proposed_path, layer)) > 0
-
-    def get_crossing_points(self, proposed_path: List[Tuple[int, int]], layer: int) -> List[Tuple[float, float]]:
-        """
-        Get intersection points where a proposed path would cross existing paths.
-
-        Args:
-            proposed_path: List of (x, y) coordinates forming a path
-            layer: Layer ID to check on
-
-        Returns:
-            List of (x, y) intersection coordinates where bump transitions should occur
-        """
-        if len(proposed_path) < 2:
+        if len(segments) < 2:
             return []
 
-        # Get existing segments on this layer
-        existing_segments = self.layer_segments[layer]
-        if not existing_segments:
-            return []  # No existing paths to cross
-
-        # Create segments from proposed path
-        proposed_segments = []
-        for i in range(len(proposed_path) - 1):
-            proposed_segments.append((proposed_path[i], proposed_path[i + 1]))
-
-        # Filter out degenerate segments (same start/end point)
-        valid_existing = [seg for seg in existing_segments if seg[0] != seg[1]]
-        valid_proposed = [seg for seg in proposed_segments if seg[0] != seg[1]]
-
-        if not valid_existing or not valid_proposed:
+        # Filter out degenerate segments
+        valid_segments = [seg for seg in segments if seg[0] != seg[1]]
+        if len(valid_segments) < 2:
             return []
 
-        # Combine all segments and use library to check for intersections
-        all_segments = valid_existing + valid_proposed
+        # Convert to bentley_ottmann Segment objects
+        bo_segments = []
+        for seg in valid_segments:
+            start_point = self.Point(seg[0][0], seg[0][1])
+            end_point = self.Point(seg[1][0], seg[1][1])
+            bo_segments.append(self.Segment(start_point, end_point))
 
-        # Use the library's Bentley-Ottmann algorithm
-        intersections = lsi.bentley_ottman(all_segments)
+        # Find intersections using bentley_ottmann sweep line algorithm
+        events = list(sweep(bo_segments, context=self.context))
 
-        # Extract coordinates from Intersection objects
+        # Extract intersection points from events with tangents
         intersection_points = []
-        for intersection in intersections:
-            try:
-                # The intersection object has a point attribute with x, y coordinates
-                if hasattr(intersection, 'point'):
-                    point = intersection.point
-                    if hasattr(point, 'x') and hasattr(point, 'y'):
-                        intersection_points.append((float(point.x), float(point.y)))
-                    else:
-                        # Fallback: try to access as tuple/list
-                        intersection_points.append((float(point[0]), float(point[1])))
-                elif hasattr(intersection, 'x') and hasattr(intersection, 'y'):
-                    # Intersection object directly has x, y attributes
-                    intersection_points.append((float(intersection.x), float(intersection.y)))
-                else:
-                    # Fallback: assume intersection is already a coordinate
-                    intersection_points.append((float(intersection[0]), float(intersection[1])))
-            except (AttributeError, TypeError, IndexError) as e:
-                # Skip malformed intersection objects
-                print(f"Warning: Could not extract coordinates from intersection object: {e}")
-                continue
+        seen_points = set()
+
+        for event in events:
+            # Events with tangents indicate intersections
+            if len(event.tangents) > 1:
+                point = event.start
+                coord = (float(point.x), float(point.y))
+
+                # Avoid duplicates
+                if coord in seen_points:
+                    continue
+                seen_points.add(coord)
+
+                # Filter out qubit positions (intended connection points)
+                if qubit_positions and self._is_qubit_position(coord, qubit_positions):
+                    continue
+
+                intersection_points.append(coord)
 
         return intersection_points
 
-    def check_segment_crossing(self, p1: Tuple[int, int], p2: Tuple[int, int], layer: int) -> bool:
+    def _is_qubit_position(self, point: Tuple[float, float], qubit_positions: set) -> bool:
         """
-        Fast check for single segment crossing (optimized for A* pathfinding).
+        Check if an intersection point is a qubit position (intended connection point).
 
         Args:
-            p1: Start point (x, y)
-            p2: End point (x, y)
-            layer: Layer ID to check on
+            point: The intersection point to check
+            qubit_positions: Set of (x, y) qubit positions
 
         Returns:
-            True if the segment would create a crossing, False otherwise
+            True if this point is a qubit position, False otherwise
         """
-        return len(self.get_segment_crossing_points(p1, p2, layer)) > 0
+        x, y = point
+        tolerance = 1e-6
 
-    def get_segment_crossing_points(self, p1: Tuple[int, int], p2: Tuple[int, int], layer: int) -> List[Tuple[float, float]]:
-        """
-        Get intersection points for a single segment crossing.
-
-        Args:
-            p1: Start point (x, y)
-            p2: End point (x, y)
-            layer: Layer ID to check on
-
-        Returns:
-            List of (x, y) intersection coordinates where bump transitions should occur
-        """
-        # Skip crossing detection if points are the same (no segment)
-        if p1 == p2:
-            return []
-
-        # Get existing segments on this layer
-        existing_segments = self.layer_segments[layer]
-        if not existing_segments:
-            return []
-
-        # Filter out degenerate segments from existing
-        valid_existing = [seg for seg in existing_segments if seg[0] != seg[1]]
-
-        if not valid_existing:
-            return []
-
-        # Create test segment and combine with existing
-        test_segment = (p1, p2)
-        all_segments = valid_existing + [test_segment]
-
-        # Use the library to check for intersections
-        intersections = lsi.bentley_ottman(all_segments)
-
-        # Extract coordinates from Intersection objects
-        intersection_points = []
-        for intersection in intersections:
-            try:
-                # The intersection object has a point attribute with x, y coordinates
-                if hasattr(intersection, 'point'):
-                    point = intersection.point
-                    if hasattr(point, 'x') and hasattr(point, 'y'):
-                        intersection_points.append((float(point.x), float(point.y)))
-                    else:
-                        # Fallback: try to access as tuple/list
-                        intersection_points.append((float(point[0]), float(point[1])))
-                elif hasattr(intersection, 'x') and hasattr(intersection, 'y'):
-                    # Intersection object directly has x, y attributes
-                    intersection_points.append((float(intersection.x), float(intersection.y)))
-                else:
-                    # Fallback: assume intersection is already a coordinate
-                    intersection_points.append((float(intersection[0]), float(intersection[1])))
-            except (AttributeError, TypeError, IndexError) as e:
-                # Skip malformed intersection objects
-                print(f"Warning: Could not extract coordinates from intersection object: {e}")
-                continue
-
-        return intersection_points
-
-    def add_path(self, confirmed_path: List[Tuple[int, int]], layer: int):
-        """
-        Add a successfully routed path to the crossing detector.
-
-        Args:
-            confirmed_path: List of (x, y) coordinates forming the path
-            layer: Layer ID to add the path to
-        """
-        if len(confirmed_path) < 2:
-            return
-
-        # Create segments from the path and add to layer
-        for i in range(len(confirmed_path) - 1):
-            segment = (confirmed_path[i], confirmed_path[i + 1])
-            self.layer_segments[layer].append(segment)
-
-    def clear_layer(self, layer: int):
-        """Clear all paths on a specific layer."""
-        if layer in self.layer_segments:
-            del self.layer_segments[layer]
-
-    def clear_all(self):
-        """Clear all paths from all layers."""
-        self.layer_segments.clear()
-
-    def get_layer_statistics(self, layer: int) -> Dict[str, int]:
-        """Get statistics for a specific layer."""
-        return {
-            'segments': len(self.layer_segments[layer])
-        }
+        for qx, qy in qubit_positions:
+            if abs(x - qx) < tolerance and abs(y - qy) < tolerance:
+                return True
+        return False

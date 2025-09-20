@@ -11,7 +11,7 @@ import numpy as np
 class QECCLayout:
     """Comprehensive layout representation containing all HAL algorithm results."""
     node_positions: Dict[int, Tuple[int, int]]  # node identifier -> grid coordinates
-    edge_routes: Dict[Tuple[int, int], List[Tuple[int, int, int]]]  # edge -> routing path
+    edge_routes: Dict[Tuple[int, int], Dict[str, any]]  # edge -> {'path': path, 'tier': tier_id, 'routing_method': method}
     tiers: List['RoutingTier']  # multi-tier routing infrastructure
     metrics: Dict[str, float]  # performance metrics (tiers, length, bumps, tsvs)
     hardware_cost: float
@@ -80,7 +80,7 @@ class PlacementResult:
 @dataclass
 class RoutingResult:
     """Multi-tier routing algorithm results with path assignments."""
-    edge_routes: Dict[Tuple[int, int], List[Tuple[int, int, int]]]  # edge -> routing path
+    edge_routes: Dict[Tuple[int, int], Dict[str, any]]  # edge -> {'path': path, 'tier': tier_id, 'routing_method': method}
     tiers: List[RoutingTier]
     unrouted_edges: Set[Tuple[int, int]]
     metrics: Dict[str, float]

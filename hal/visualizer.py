@@ -184,7 +184,29 @@ class HALVisualizer:
             if tier.tsvs:
                 tsv_x = [pos[0] for pos in tier.tsvs]
                 tsv_y = [pos[1] for pos in tier.tsvs]
-                ax.scatter(tsv_x, tsv_y, c='red', s=10, marker='o', alpha=0.8, zorder=8)
+                ax.scatter(tsv_x, tsv_y, c='red', s=15, marker='o', alpha=0.8, zorder=8)
+
+            # Add bump bonds (layer transitions) as green squares
+            bump_positions = []
+            for edge, route_info in layout.edge_routes.items():
+                if not route_info or not route_info.get('path'):
+                    continue
+
+                edge_tier = route_info.get('tier', 0)
+                if edge_tier != tier_id:
+                    continue
+
+                path = route_info['path']
+                # Find layer transitions (bump bonds)
+                for i in range(len(path) - 1):
+                    if path[i][2] != path[i + 1][2]:  # Layer change
+                        bump_positions.append((path[i][0], path[i][1]))
+
+            if bump_positions:
+                bump_x = [pos[0] for pos in bump_positions]
+                bump_y = [pos[1] for pos in bump_positions]
+                ax.scatter(bump_x, bump_y, c='green', s=10, marker='s', alpha=0.8, zorder=10,
+                          edgecolor='darkgreen', linewidth=1)
 
             
             ax.set_title(f'Tier {tier_id}')
@@ -303,7 +325,25 @@ class HALVisualizer:
         if layout.tiers and layout.tiers[0].tsvs:
             tsv_x = [pos[0] for pos in layout.tiers[0].tsvs]
             tsv_y = [pos[1] for pos in layout.tiers[0].tsvs]
-            plt.scatter(tsv_x, tsv_y, c='red', s=10, marker='o', alpha=0.8, zorder=8)
+            plt.scatter(tsv_x, tsv_y, c='red', s=15, marker='o', alpha=0.8, zorder=8)
+
+        # Add bump bonds (layer transitions) as green squares
+        bump_positions = []
+        for edge, route_info in layout.edge_routes.items():
+            if not route_info or not route_info.get('path'):
+                continue
+
+            path = route_info['path']
+            # Find layer transitions (bump bonds)
+            for i in range(len(path) - 1):
+                if path[i][2] != path[i + 1][2]:  # Layer change
+                    bump_positions.append((path[i][0], path[i][1]))
+
+        if bump_positions:
+            bump_x = [pos[0] for pos in bump_positions]
+            bump_y = [pos[1] for pos in bump_positions]
+            plt.scatter(bump_x, bump_y, c='green', s=10, marker='s', alpha=0.8, zorder=10,
+                       edgecolor='darkgreen', linewidth=1)
         
         plt.title(f"HAL Layout - {len(layout.node_positions)} qubits, "
                  f"{len(layout.edge_routes)} edges\n"

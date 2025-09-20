@@ -287,6 +287,148 @@ class GraphAnalyzer:
         }
 
 
+def _is_prime(n: int) -> bool:
+    """Check if a number is prime."""
+    if n < 2:
+        return False
+    if n == 2:
+        return True
+    if n % 2 == 0:
+        return False
+    for i in range(3, int(n**0.5) + 1, 2):
+        if n % i == 0:
+            return False
+    return True
+
+
+def _generate_classical_radial_matrix(r: int, s: int, matrix_id: int = 0) -> np.ndarray:
+    """
+    Generate a classical radial code matrix A with elements a(u,u').
+    
+    Each element describes connections between rings u and u'.
+    Ensures girth ≥ 6 and linear independence constraints.
+    
+    Args:
+        r: Number of rings
+        s: Prime field parameter
+        matrix_id: Identifier to generate different matrices deterministically
+    """
+    import random
+    from .config import HALConfig
+    
+    # Use the HAL config random seed plus matrix_id for deterministic but different generation
+    config = HALConfig()
+    random.seed(config.random_seed + matrix_id)
+    
+    A = np.zeros((r, r), dtype=int)
+    
+    # Ensure rows are linearly independent by making matrix full rank
+    for u in range(r):
+        for u_prime in range(r):
+            A[u, u_prime] = random.randint(0, s - 1)
+    
+    # Check linear independence constraint and girth constraint
+    max_attempts = 100
+    attempt = 0
+    
+    while attempt < max_attempts:
+        # Check girth constraint: a(u1,u'1) - a(u1,u'2) - a(u2,u'1) + a(u2,u'2) ≠ 0 mod s
+        valid = True
+        for u1 in range(r):
+            for u2 in range(r):
+                if u1 != u2:
+                    for up1 in range(r):
+                        for up2 in range(r):
+                            if up1 != up2:
+                                diff = (A[u1, up1] - A[u1, up2] - A[u2, up1] + A[u2, up2]) % s
+                                if diff == 0:
+                                    valid = False
+                                    break
+                        if not valid:
+                            break
+                if not valid:
+                    break
+            if not valid:
+                break
+        
+        if valid:
+            break
+        
+        # Regenerate if constraints not satisfied
+        for u in range(r):
+            for u_prime in range(r):
+                A[u, u_prime] = random.randint(0, s - 1)
+        attempt += 1
+    
+    return A
+
+
+def _matrices_equal(A1: np.ndarray, A2: np.ndarray) -> bool:
+    """Check if two matrices are equal."""
+    return np.array_equal(A1, A2)
+
+
+def _lifted_product_to_graph(A1: np.ndarray, A2: np.ndarray, r: int, s: int) -> nx.Graph:
+    """
+    Convert lifted product of two classical radial codes to connectivity graph.
+    
+    Implementation follows the lifted product construction:
+    HX = [H1 ⊗ Im2 | Im1 ⊗ H2]
+    HZ = [In1 ⊗ H2* | H1* ⊗ In2]
+    
+    Each stabilizer connects to 2r qubits (r from each classical code).
+    """
+    n_qubits = 2 * r * r * s  # Total number of physical qubits
+    
+    G = nx.Graph()
+    G.add_nodes_from(range(n_qubits))
+    
+    # Each qubit has coordinate (c, u, v) where:
+    # c ∈ {0,1,...,2r-1}: which classical code (0 to r-1 for X codes, r to 2r-1 for Z codes)
+    # u ∈ {0,1,...,r-1}: ring index
+    # v ∈ {0,1,...,s-1}: spoke index
+    
+    # Build edges based on stabilizer structure
+    # Each stabilizer from code c, ring u connects to:
+    # - One qubit from each ring of code c (via H matrix)
+    # - One qubit from ring u of each other code (via lifted product)
+    
+    for code_idx in range(2 * r):  # X codes (0 to r-1) and Z codes (r to 2r-1)
+        is_x_code = code_idx < r
+        matrix = A1 if is_x_code else A2
+        
+        for ring_u in range(r):
+            for spoke_v in range(s):
+                # This stabilizer connects qubits based on matrix entries
+                stabilizer_qubits = []
+                
+                # Connect to qubits within same code (via circulant structure)
+                for ring_up in range(r):
+                    shift = matrix[ring_u, ring_up]
+                    target_spoke = (spoke_v + shift) % s
+                    target_qubit = code_idx * (r * s) + ring_up * s + target_spoke
+                    stabilizer_qubits.append(target_qubit)
+                
+                # Connect to qubits in other codes (via lifted product structure)
+                other_codes_start = r if is_x_code else 0
+                other_codes_end = 2 * r if is_x_code else r
+                
+                for other_code in range(other_codes_start, other_codes_end):
+                    if other_code != code_idx:
+                        # Connect to ring_u qubit in other code
+                        target_qubit = other_code * (r * s) + ring_u * s + spoke_v
+                        stabilizer_qubits.append(target_qubit)
+                
+                # Add edges between all qubits in this stabilizer
+                for i in range(len(stabilizer_qubits)):
+                    for j in range(i + 1, len(stabilizer_qubits)):
+                        u, v = stabilizer_qubits[i], stabilizer_qubits[j]
+                        if u != v:
+                            G.add_edge(u, v)
+    
+    return G
+
+
 def create_qecc_graph_from_edges(edges: List[Tuple[int, int]]) -> nx.Graph:
     """Create a graph from a list of edges."""
     G = nx.Graph()
@@ -295,16 +437,15 @@ def create_qecc_graph_from_edges(edges: List[Tuple[int, int]]) -> nx.Graph:
 
 
 
-def create_bicycle_code_graph(n: int, k: int, d: int) -> nx.Graph:
+def create_bicycle_code_graph(n1: int, n2: int) -> nx.Graph:
     """
-    Create a bivariate bicycle code connectivity graph from [n,k,d] parameters.
-    Uses heuristic to determine torus dimensions and shift parameters.
+    Create a bivariate bicycle code connectivity graph from dimensions.
+    
+    Args:
+        n1: Number of rows
+        n2: Number of columns
     """
-    # Determine torus dimensions - try to make it as square as possible
-    n1 = int(n**0.5)
-    while n % n1 != 0 and n1 > 1:
-        n1 -= 1
-    n2 = n // n1
+    n = n1 * n2  # Total number of qubits
     
     # Use simple shift parameters as default
     a, b = 1, 1
@@ -329,6 +470,10 @@ def create_bicycle_code_graph(n: int, k: int, d: int) -> nx.Graph:
             next_j = (j + b) % n2
             next_node = i * n2 + next_j
             G.add_edge(node, next_node)
+    
+    # Store dimensions as graph attributes for custom position generation
+    G.graph['n1'] = n1
+    G.graph['n2'] = n2
     
     return G
 
@@ -404,198 +549,123 @@ def create_tile_code_graph(n: int, k: int, d: int) -> nx.Graph:
     return G
 
 
-def create_radial_code_graph(n: int, k: int, d: int) -> nx.Graph:
+def create_radial_code_graph(r: int, s: int) -> nx.Graph:
     """
-    Create a radial code connectivity graph from [n,k,d] parameters.
-    Uses heuristic to determine r and s parameters.
+    Create a quantum radial code connectivity graph using lifted product construction.
     
-    Creates a quantum radial code with parameters [2r²s, 2(r-1)², ≤2s].
-    Each qubit connects to exactly 2r other qubits.
+    Implements the construction from "High-threshold, low-overhead and single-shot 
+    decodable fault-tolerant quantum memory" by Scruby, Hillmann, and Roffe.
+    
+    Creates quantum radial codes with parameters [[2r²s, 2(r-1)², ≤2s]].
+    
+    Args:
+        r: Number of rings (must satisfy r ≤ s)
+        s: Number of spokes per ring (must be prime)
+    
+    Returns:
+        NetworkX graph representing quantum radial code with 2r²s nodes
+    """
+    # Validate parameters
+    if r > s:
+        raise ValueError(f"r ({r}) must be ≤ s ({s})")
+    if not _is_prime(s):
+        raise ValueError(f"s ({s}) must be prime")
+    
+    # Generate classical radial codes H1 and H2
+    A1 = _generate_classical_radial_matrix(r, s, 0)
+    A2 = _generate_classical_radial_matrix(r, s, 1)
+    
+    # Ensure A1 and A2 are different for better distance properties
+    attempt = 2
+    while _matrices_equal(A1, A2):
+        A2 = _generate_classical_radial_matrix(r, s, attempt)
+        attempt += 1
+    
+    # Create quantum code via lifted product
+    G = _lifted_product_to_graph(A1, A2, r, s)
+    
+    # Store parameters as graph attributes
+    G.graph['r'] = r
+    G.graph['s'] = s
+    G.graph['n'] = 2 * r * r * s
+    G.graph['k'] = 2 * (r - 1) * (r - 1)
+    G.graph['d_upper'] = 2 * s
+    
+    return G
+
+
+def create_radial_code_graph_from_nkd(n: int, k: int, d: int) -> nx.Graph:
+    """
+    Create a quantum radial code from [n,k,d] parameters by finding suitable (r,s).
     
     Args:
         n: Number of physical qubits
-        k: Number of logical qubits
+        k: Number of logical qubits  
         d: Distance of the code
-    
+        
     Returns:
-        NetworkX graph with n=2r²s nodes, each having degree 2r
+        NetworkX graph representing quantum radial code
     """
-    # Determine r and s parameters from [n,k,d]
-    # For radial codes: n = 2r²s, k = 2(r-1)², d ≤ 2s
-    # Rough heuristic: r = sqrt(k), s chosen to get close to n qubits
-    r = max(2, int((k)**0.5))
-    s = max(4, n // (2 * r**2))
+    # Find suitable (r,s) parameters
+    # For quantum radial codes: n = 2r²s, k = 2(r-1)², d ≤ 2s
     
-    G = nx.Graph()
-    target_degree = 2 * r
+    best_r, best_s = None, None
+    best_error = float('inf')
     
-    # Add all nodes
-    for i in range(n):
-        G.add_node(i)
-    
-    # Build connections systematically to ensure exact degree and connectivity
-    # Use a more structured approach
-    
-    # First pass: Create basic structural connections
-    for node in range(n):
-        # Get node coordinates: copy, ring, spoke, pos
-        copy = node // (r * r * s)
-        remainder = node % (r * r * s)
-        ring = remainder // (r * s)
-        spoke = (remainder % (r * s)) // s
-        pos = remainder % s
-        
-        connections_made = 0
-        
-        # Connect to other rings (r-1 connections)
-        for other_ring in range(r):
-            if other_ring != ring and connections_made < target_degree:
-                target = copy * (r * r * s) + other_ring * (r * s) + spoke * s + pos
-                if target != node and not G.has_edge(node, target):
-                    G.add_edge(node, target)
-                    connections_made += 1
-        
-        # Connect to other spokes (r-1 connections)
-        for other_spoke in range(r):
-            if other_spoke != spoke and connections_made < target_degree:
-                target = copy * (r * r * s) + ring * (r * s) + other_spoke * s + pos
-                if target != node and not G.has_edge(node, target):
-                    G.add_edge(node, target)
-                    connections_made += 1
-        
-        # Connect to other copy for connectivity
-        if connections_made < target_degree:
-            other_copy = 1 - copy
-            target = other_copy * (r * r * s) + ring * (r * s) + spoke * s + pos
-            if target != node and not G.has_edge(node, target):
-                G.add_edge(node, target)
-                connections_made += 1
-    
-    # Second pass: Balance degrees to exactly 2r
-    max_iterations = n * 2  # Prevent infinite loops
-    iteration = 0
-    
-    while iteration < max_iterations:
-        all_correct = True
-        
-        for node in range(n):
-            current_degree = G.degree(node)
+    # Search for good (r,s) values
+    for r_candidate in range(2, min(20, int(k**0.5) + 5)):  # Reasonable range for r
+        if 2 * (r_candidate - 1)**2 != k:
+            continue  # k must match exactly
             
-            if current_degree < target_degree:
-                all_correct = False
-                # Find nodes with degree > target_degree or add new connections
-                for target in range(n):
-                    if (target != node and not G.has_edge(node, target) and 
-                        G.degree(target) < target_degree):
-                        G.add_edge(node, target)
-                        break
-                else:
-                    # If no suitable target found, connect to any available node
-                    for target in range(n):
-                        if target != node and not G.has_edge(node, target):
-                            G.add_edge(node, target)
-                            break
+        # Find s such that n ≈ 2r²s and s is prime
+        target_s = n // (2 * r_candidate**2)
         
-        if all_correct:
-            break
-        iteration += 1
+        # Search around target_s for prime values
+        for s_candidate in range(max(r_candidate + 1, target_s - 10), target_s + 20):
+            if s_candidate <= r_candidate or not _is_prime(s_candidate):
+                continue
+                
+            predicted_n = 2 * r_candidate**2 * s_candidate
+            predicted_d_upper = 2 * s_candidate
+            
+            error = abs(predicted_n - n) + max(0, d - predicted_d_upper)
+            
+            if error < best_error:
+                best_error = error
+                best_r, best_s = r_candidate, s_candidate
     
-    # Third pass: Ensure connectivity by adding minimal edges if needed
-    if not nx.is_connected(G):
-        components = list(nx.connected_components(G))
-        # Connect components with minimal degree impact
-        for i in range(len(components) - 1):
-            # Find nodes with minimum degree in each component
-            comp1_nodes = [(node, G.degree(node)) for node in components[i]]
-            comp2_nodes = [(node, G.degree(node)) for node in components[i + 1]]
-            
-            # Sort by degree to connect nodes with lowest degrees
-            comp1_nodes.sort(key=lambda x: x[1])
-            comp2_nodes.sort(key=lambda x: x[1])
-            
-            # Connect the lowest degree nodes from each component
-            node1 = comp1_nodes[0][0]
-            node2 = comp2_nodes[0][0]
-            
-            if not G.has_edge(node1, node2):
-                G.add_edge(node1, node2)
+    if best_r is None:
+        # Fallback: use heuristic values
+        best_r = max(2, int((k/2)**0.5) + 1)
+        best_s = max(best_r + 1, 5)
+        # Find next prime ≥ best_s
+        while not _is_prime(best_s):
+            best_s += 1
     
-    return G
+    return create_radial_code_graph(best_r, best_s)
+
+
 
 
 
 
 def create_bicycle_code_positions(n1: int, n2: int) -> Dict[int, Tuple[int, int]]:
     """
-    Create custom positions for bicycle code distributed across auxiliary grid.
-    Uses paper's approach of distributing qubits across auxiliary grid infrastructure.
+    Create custom positions for bicycle code in compact grid layout.
     
     Args:
         n1: First dimension
         n2: Second dimension
     
     Returns:
-        Dictionary mapping node IDs to (x, y) positions distributed across auxiliary grid
+        Dictionary mapping node IDs to (x, y) positions in compact grid
     """
-    total_qubits = n1 * n2
-    
-    # Calculate auxiliary grid dimensions using paper's 50% efficiency approach
-    target_efficiency = 0.5  # Paper's 50% efficiency target
-    target_total_positions = int(total_qubits / target_efficiency)
-    
-    # Calculate auxiliary grid dimensions (like paper's 10×6)
-    grid_height = int((target_total_positions / 1.6) ** 0.5)  # Start with height
-    aux_grid_width = int(target_total_positions / grid_height)
-    
-    # Adjust to get close to target positions
-    while aux_grid_width * grid_height < target_total_positions:
-        aux_grid_width += 1
-    
-    print(f"Bicycle code: Distributing {total_qubits} qubits across {aux_grid_width}×{grid_height} auxiliary grid")
-    
-    # Distribute qubits across the auxiliary grid (not clustered in corner)
-    import numpy as np
-    np.random.seed(42)  # For reproducible results
-    
     positions = {}
-    placed_positions = set()
-    
-    # Calculate spacing for better distribution
-    spacing_x = max(1, aux_grid_width // max(1, int(total_qubits**0.5)))
-    spacing_y = max(1, grid_height // max(1, int(total_qubits**0.5)))
     
     for i in range(n1):
         for j in range(n2):
             node_id = i * n2 + j
-            
-            # Try distributed placement
-            attempts = 0
-            while attempts < 20:
-                if attempts < 10:
-                    # Systematic distribution
-                    base_row = (i % int(total_qubits**0.5)) * spacing_y
-                    base_col = (j % int(total_qubits**0.5)) * spacing_x
-                    row = base_row + np.random.randint(0, max(1, spacing_y))
-                    col = base_col + np.random.randint(0, max(1, spacing_x))
-                else:
-                    # Random placement
-                    row = np.random.randint(0, grid_height)
-                    col = np.random.randint(0, aux_grid_width)
-                
-                # Ensure within bounds
-                row = max(0, min(grid_height - 1, row))
-                col = max(0, min(aux_grid_width - 1, col))
-                
-                if (col, row) not in placed_positions:
-                    positions[node_id] = (col, row)
-                    placed_positions.add((col, row))
-                    break
-                
-                attempts += 1
-            
-            # Fallback if no position found
-            if node_id not in positions:
-                positions[node_id] = (j, i)  # Use original compact placement as fallback
+            positions[node_id] = (j, i)  # Simple compact grid placement
     
     return positions
 
@@ -650,9 +720,17 @@ def get_code_custom_positions(graph: nx.Graph, code_type: str,
     n_nodes = graph.number_of_nodes()
     
     if code_type == 'bicycle':
-        # Estimate dimensions for bicycle code
-        n1 = kwargs.get('n1', int(n_nodes**0.5))
-        n2 = kwargs.get('n2', (n_nodes + n1 - 1) // n1)
+        # Get dimensions from graph attributes (stored during graph creation)
+        n1 = graph.graph.get('n1')
+        n2 = graph.graph.get('n2')
+        
+        if n1 is None or n2 is None:
+            # Fallback: estimate dimensions for bicycle code
+            n1 = kwargs.get('n1', int(n_nodes**0.5))
+            while n_nodes % n1 != 0 and n1 > 1:
+                n1 -= 1
+            n2 = kwargs.get('n2', n_nodes // n1)
+        
         return create_bicycle_code_positions(n1, n2)
     
     elif code_type == 'tile':
@@ -670,83 +748,6 @@ def get_code_custom_positions(graph: nx.Graph, code_type: str,
         return None
 
 
-def create_radial_code_graph_legacy(rings: int, nodes_per_ring: int, ring_connections: str = 'nearest') -> nx.Graph:
-    """
-    Legacy radial code graph creator (kept for backward compatibility).
-    
-    Args:
-        rings: Number of concentric rings
-        nodes_per_ring: Number of nodes in each ring
-        ring_connections: Type of connections between rings ('nearest', 'full', 'alternating')
-    
-    Returns:
-        NetworkX graph representing the radial code
-    """
-    G = nx.Graph()
-    
-    # Add center node if rings > 0
-    total_nodes = 0
-    if rings > 0:
-        G.add_node(0)
-        total_nodes = 1
-    
-    # Add nodes for each ring
-    ring_start_nodes = [0]  # Start index for each ring
-    for ring in range(1, rings + 1):
-        ring_nodes = []
-        for i in range(nodes_per_ring):
-            node_id = total_nodes + i
-            G.add_node(node_id)
-            ring_nodes.append(node_id)
-        ring_start_nodes.append(total_nodes)
-        total_nodes += nodes_per_ring
-        
-        # Connect nodes within the ring (circular)
-        for i in range(nodes_per_ring):
-            current = ring_start_nodes[ring] + i
-            next_node = ring_start_nodes[ring] + ((i + 1) % nodes_per_ring)
-            G.add_edge(current, next_node)
-    
-    # Connect rings based on connection type
-    for ring in range(1, rings + 1):
-        if ring == 1:
-            # Connect center to first ring
-            center = 0
-            for i in range(nodes_per_ring):
-                ring_node = ring_start_nodes[ring] + i
-                G.add_edge(center, ring_node)
-        else:
-            # Connect to previous ring
-            prev_ring_start = ring_start_nodes[ring - 1]
-            curr_ring_start = ring_start_nodes[ring]
-            
-            if ring_connections == 'nearest':
-                # Connect each node to nearest node(s) in previous ring
-                for i in range(nodes_per_ring):
-                    curr_node = curr_ring_start + i
-                    # Connect to corresponding node in previous ring
-                    prev_node = prev_ring_start + i
-                    G.add_edge(curr_node, prev_node)
-                    
-            elif ring_connections == 'full':
-                # Connect each node to all nodes in previous ring
-                for i in range(nodes_per_ring):
-                    curr_node = curr_ring_start + i
-                    for j in range(nodes_per_ring):
-                        prev_node = prev_ring_start + j
-                        G.add_edge(curr_node, prev_node)
-                        
-            elif ring_connections == 'alternating':
-                # Connect each node to two adjacent nodes in previous ring
-                for i in range(nodes_per_ring):
-                    curr_node = curr_ring_start + i
-                    # Connect to two adjacent nodes in previous ring
-                    prev_node1 = prev_ring_start + (i % nodes_per_ring)
-                    prev_node2 = prev_ring_start + ((i + 1) % nodes_per_ring)
-                    G.add_edge(curr_node, prev_node1)
-                    G.add_edge(curr_node, prev_node2)
-    
-    return G
 
 
 

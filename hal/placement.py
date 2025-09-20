@@ -31,13 +31,16 @@ class SpringLayout:
         if n == 1:
             return {nodes[0]: (0.0, 0.0)}
         
-        # Compute all-pairs shortest path distances
-        distances = self.analyzer.compute_all_pairs_shortest_paths()
-        
         # Construct planar subgraph for distance computation
         planar_graph = nx.Graph()
         planar_graph.add_nodes_from(self.graph.nodes())
-        planar_graph.add_edges_from(planar_subgraph_edges)
+        planar_graph.add_edges_from(planar_subgraph_edges or [])
+        
+        # Compute distances on planar subgraph if provided, otherwise use full graph
+        if planar_subgraph_edges:
+            distances = dict(nx.all_pairs_shortest_path_length(planar_graph))
+        else:
+            distances = self.analyzer.compute_all_pairs_shortest_paths()
         
         # Calculate spring constant parameter for distance scaling
         if self.config.spring_layout_k is None:
@@ -476,10 +479,24 @@ class PlacementEngine:
             PlacementResult containing node positions and metadata
         """
         if custom_positions:
-            # Use custom positions directly
-            node_positions = custom_positions.copy()
-            planar_edges = set(graph.edges())  # Assume all edges can be planar with custom positions
-            communities = {node: 0 for node in graph.nodes()}  # Single community
+            # Always rasterize and compact custom positions as per HAL paper spec
+            snapped = self.rasterizer.rasterize_positions(custom_positions)
+            node_positions = self.rasterizer.compact_grid(snapped)
+            
+            # Add spacing between qubits for routing infrastructure
+            node_positions = self._add_qubit_spacing(node_positions, spacing=self.config.qubit_spacing)
+            
+            # Run normal MPS extraction on the given graph
+            # Step 1: Community detection for edge prioritization
+            community_detector = CommunityDetector(graph, self.config)
+            communities = community_detector.detect_communities()
+            
+            # Step 2: Extract planar subgraph using position-dependent edge priorities
+            analyzer = GraphAnalyzer(graph)
+            edge_priorities = analyzer.get_edge_priorities(communities, node_positions)
+            
+            planarity_tester = PlanarityTester(graph)
+            planar_edges = planarity_tester.get_planar_subgraph(edge_priorities)
         else:
             # Use algorithmic placement
             node_positions, planar_edges, communities = self._algorithmic_placement(graph)
@@ -534,36 +551,41 @@ class PlacementEngine:
         # Step 6: Apply grid compaction with monotone remapping
         final_positions = self.rasterizer.compact_grid(final_positions)
         
+        # Step 7: Add spacing between qubits for routing infrastructure
+        final_positions = self._add_qubit_spacing(final_positions, spacing=self.config.qubit_spacing)
+        
         return final_positions, planar_edges, communities
     
     def _calculate_auxiliary_grid_dimensions(self, n_logical_qubits: int) -> Tuple[int, int]:
         """
-        Calculate auxiliary grid dimensions using paper's methodology.
-        This mirrors the calculation in routing.py for consistency.
+        Return initial grid dimensions for rasterization.
+        The actual grid size emerges naturally from the placement optimization process.
+        This is just an initial canvas that gets compacted after placement.
         """
         if n_logical_qubits == 0:
             return (10, 10)
         
-        # Paper's approach: 50% efficiency target
-        target_efficiency = getattr(self.config, 'hardware_efficiency_target', 0.5)
-        target_total_positions = int(n_logical_qubits / target_efficiency)
+        # Start with generous initial canvas - will be compacted after placement
+        # Paper's rasterization process determines actual space needs naturally
+        initial_size = max(10, int((n_logical_qubits) ** 0.6) + 5)
+        return (initial_size, initial_size)
+    
+    def _add_qubit_spacing(self, positions: Dict[int, Tuple[int, int]], spacing: int) -> Dict[int, Tuple[int, int]]:
+        """
+        Add spacing between qubits to allow for routing infrastructure.
         
-        # Calculate dimensions for rectangular grid (like paper's 10×6)
-        grid_height = int((target_total_positions / 1.6) ** 0.5)  # Start with height
-        grid_width = int(target_total_positions / grid_height)
+        Args:
+            positions: Current qubit positions
+            spacing: Units of space to add between each qubit
+            
+        Returns:
+            New positions with spacing applied
+        """
+        spaced_positions = {}
+        for node, (x, y) in positions.items():
+            spaced_positions[node] = (x * spacing, y * spacing)
         
-        # Adjust to get close to target positions
-        while grid_width * grid_height < target_total_positions:
-            grid_width += 1
-        
-        # Don't make it too much bigger than needed
-        if grid_width * grid_height > target_total_positions * 1.2:  # Max 20% over
-            if grid_width > grid_height:
-                grid_width -= 1
-            else:
-                grid_height -= 1
-        
-        return (grid_width, grid_height)
+        return spaced_positions
 
 
 class AspectRatioAnalyzer:

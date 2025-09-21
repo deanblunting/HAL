@@ -231,7 +231,7 @@ def create_qecc_graph_from_info(code_info: Dict[str, Any]) -> Optional[nx.Graph]
         NetworkX graph or None if creation fails
     """
     try:
-        from .graph_utils import create_bicycle_code_graph, create_tile_code_graph, create_radial_code_graph
+        from .graph_utils import create_bicycle_code_graph, create_tile_code_graph, create_radial_code_graph_from_nkd
         
         family = code_info['family']
         n, k, d = code_info['n'], code_info['k'], code_info['d']
@@ -241,7 +241,7 @@ def create_qecc_graph_from_info(code_info: Dict[str, Any]) -> Optional[nx.Graph]
         elif family in ['Tile code', 'Tile']:
             return create_tile_code_graph(n, k, d)
         elif family in ['Radial code', 'Radial']:
-            return create_radial_code_graph(n, k, d)
+            return create_radial_code_graph_from_nkd(n, k, d)
         else:
             raise ValueError(f"Unknown code family: {family}")
             

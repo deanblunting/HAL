@@ -86,7 +86,8 @@ class HAL:
         routing_result = self.routing_engine.route_edges(
             connectivity_graph,
             placement_result.node_positions,
-            placement_result.planar_subgraph_edges
+            placement_result.planar_subgraph_edges,
+            placement_result.grid_bounds
         )
         
         routing_time = time.time() - routing_start

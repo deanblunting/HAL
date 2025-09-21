@@ -43,7 +43,8 @@ class StraightLineRouter:
         return [(start[0], start[1], layer), (end[0], end[1], layer)]
 
     def route_with_bump_transitions(self, start: Tuple[int, int], end: Tuple[int, int],
-                                   existing_routes: Dict, tier: 'RoutingTier') -> Optional[List[Tuple[int, int, int]]]:
+                                   existing_routes: Dict, tier: 'RoutingTier',
+                                   node_positions: Dict[int, Tuple[int, int]] = None) -> Optional[List[Tuple[int, int, int]]]:
         """
         Route edge with bump transitions to avoid intersections.
 
@@ -88,7 +89,13 @@ class StraightLineRouter:
             # Check for intersections on current layer
             test_segments = segments_by_layer[current_layer] + [current_segment]
             layer_segments = {current_layer: test_segments}
-            intersections = self.crossing_detector.find_intersections_by_layer(layer_segments)
+
+            # Convert node_positions to set of qubit positions for filtering
+            qubit_positions = None
+            if node_positions:
+                qubit_positions = set(node_positions.values())
+
+            intersections = self.crossing_detector.find_intersections_by_layer(layer_segments, qubit_positions)
 
             # Find intersections on our current segment
             segment_intersections = []
@@ -267,7 +274,8 @@ class RoutingEngine:
         self.crossing_detector = CrossingDetector()
 
     def route_edges(self, graph: nx.Graph, node_positions: Dict[int, Tuple[int, int]],
-                   planar_subgraph_edges: Set[Tuple[int, int]]) -> RoutingResult:
+                   planar_subgraph_edges: Set[Tuple[int, int]],
+                   grid_bounds: Tuple[int, int, int, int] = None) -> RoutingResult:
         """
         Route all edges across multiple tiers using clean HAL algorithm.
 
@@ -284,8 +292,11 @@ class RoutingEngine:
         unrouted_edges = set()
         tier_usage = defaultdict(int)
 
+        # Store grid bounds for consistent tier creation
+        self.grid_bounds = grid_bounds
+
         # Initialize tier 0 (qubit tier)
-        qubit_tier = self._create_tier(0, node_positions)
+        qubit_tier = self._create_tier(0, node_positions, grid_bounds)
         tiers.append(qubit_tier)
 
         all_edges = list(graph.edges())
@@ -341,7 +352,7 @@ class RoutingEngine:
             print(f"Creating tier {current_tier_id} for {len(remaining_edges)} edges")
 
             # Create new tier
-            current_tier = self._create_tier(current_tier_id, node_positions)
+            current_tier = self._create_tier(current_tier_id, node_positions, grid_bounds)
             tiers.append(current_tier)
 
             # Add TSVs for incident nodes
@@ -407,15 +418,21 @@ class RoutingEngine:
             metrics=metrics
         )
 
-    def _create_tier(self, tier_id: int, node_positions: Dict[int, Tuple[int, int]]) -> RoutingTier:
-        """Create a new routing tier."""
-        coords = list(node_positions.values())
-        if not coords:
-            grid_size = (10, 10, 2)
+    def _create_tier(self, tier_id: int, node_positions: Dict[int, Tuple[int, int]],
+                    grid_bounds: Tuple[int, int, int, int] = None) -> RoutingTier:
+        """Create a new routing tier using consistent grid size from placement."""
+        if grid_bounds:
+            min_x, max_x, min_y, max_y = grid_bounds
+            grid_size = (max_x - min_x + 1, max_y - min_y + 1, 2)
         else:
-            max_x = max(x for x, y in coords)
-            max_y = max(y for x, y in coords)
-            grid_size = (max_x + 3, max_y + 3, 2)  # Small margin
+            # Fallback to old behavior if no grid bounds provided
+            coords = list(node_positions.values())
+            if not coords:
+                grid_size = (10, 10, 2)
+            else:
+                max_x = max(x for x, y in coords)
+                max_y = max(y for x, y in coords)
+                grid_size = (max_x + 3, max_y + 3, 2)  # Small margin
 
         return RoutingTier(
             tier_id=tier_id,
@@ -440,7 +457,7 @@ class RoutingEngine:
         proposed_path = self.straight_router.route_straight_line(start_pos, end_pos, QUBIT_LAYER)
 
         # Check for crossings with existing routes - if crossing detected, fail this edge
-        if self._would_cross_existing_routes(proposed_path, existing_routes, 0):
+        if self._would_cross_existing_routes(proposed_path, existing_routes, 0, node_positions):
             return None  # Edge fails and goes to FIFO queue for higher tier
 
         return proposed_path
@@ -457,7 +474,7 @@ class RoutingEngine:
         end_pos = node_positions[v]
 
         # Try straight-line routing with bump transitions
-        path = self.straight_router.route_with_bump_transitions(start_pos, end_pos, existing_routes, tier)
+        path = self.straight_router.route_with_bump_transitions(start_pos, end_pos, existing_routes, tier, node_positions)
         if path:
             return path, 'straight_line_bumps'
 
@@ -468,7 +485,7 @@ class RoutingEngine:
         path = self.pathfinder.find_path(start_3d, end_3d, tier.grid.shape)
         if path:
             # Validate A* path doesn't create crossings
-            if self._would_cross_existing_routes(path, existing_routes, tier.tier_id):
+            if self._would_cross_existing_routes(path, existing_routes, tier.tier_id, node_positions):
                 return None, 'failed'  # A* path would create crossings
             return path, 'astar'
         else:
@@ -488,7 +505,8 @@ class RoutingEngine:
                 tier.tsvs.add((x, y))
 
     def _would_cross_existing_routes(self, proposed_path: List[Tuple[int, int, int]],
-                                   existing_routes: Dict, tier_id: int) -> bool:
+                                   existing_routes: Dict, tier_id: int,
+                                   node_positions: Dict[int, Tuple[int, int]] = None) -> bool:
         """Check if proposed path would cross any existing routes on the same tier."""
         if not proposed_path or len(proposed_path) < 2:
             return False
@@ -527,7 +545,13 @@ class RoutingEngine:
                 # Test proposed segments against existing segments
                 test_segments = existing_segments + proposed_segments
                 layer_segments = {layer: test_segments}
-                intersections = self.crossing_detector.find_intersections_by_layer(layer_segments)
+
+                # Convert node_positions to set of qubit positions for filtering
+                qubit_positions = None
+                if node_positions:
+                    qubit_positions = set(node_positions.values())
+
+                intersections = self.crossing_detector.find_intersections_by_layer(layer_segments, qubit_positions)
 
                 if intersections.get(layer, []):
                     return True  # Found crossing

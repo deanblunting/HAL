@@ -29,8 +29,11 @@ class HALConfig:
     layout_granularity: int = 1
 
     # Maximum bump transitions per coupler: limits bump bond usage per connection
-    # Each edge can switch back and forth between layer 0 and 1 up to 4 times total
-    max_bump_transitions: int = 4
+    # Each edge can switch back and forth between layer 0 and 1 up to 10 times total
+    max_bump_transitions: int = 10
+
+    # Bump bond offset: distance before intersection to place bump bond (in grid units)
+    bump_bond_offset: float = 0.5
 
     # Maximum TSVs per coupler: restricts through-silicon vias per connection
     max_tsvs_per_edge: int = 3

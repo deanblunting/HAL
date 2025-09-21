@@ -4,7 +4,7 @@ Intersection detection using the bentley_ottmann library.
 
 from bentley_ottmann.core.base import sweep
 from ground.base import get_context
-from typing import List, Tuple
+from typing import List, Tuple, Dict
 
 
 class CrossingDetector:
@@ -71,6 +71,26 @@ class CrossingDetector:
                 intersection_points.append(coord)
 
         return intersection_points
+
+    def find_intersections_by_layer(self, segments_by_layer: Dict[int, List[Tuple[Tuple[int, int], Tuple[int, int]]]],
+                                   qubit_positions: set = None) -> Dict[int, List[Tuple[float, float]]]:
+        """
+        Find intersections for segments grouped by layer.
+
+        Args:
+            segments_by_layer: Dictionary mapping layer -> list of segments on that layer
+            qubit_positions: Set of (x, y) qubit positions to exclude from intersection detection
+
+        Returns:
+            Dictionary mapping layer -> list of intersection coordinates on that layer
+        """
+        intersections_by_layer = {}
+
+        for layer, segments in segments_by_layer.items():
+            layer_intersections = self._find_intersections_from_segments(segments, qubit_positions)
+            intersections_by_layer[layer] = layer_intersections
+
+        return intersections_by_layer
 
     def _is_qubit_position(self, point: Tuple[float, float], qubit_positions: set) -> bool:
         """

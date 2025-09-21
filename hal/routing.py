@@ -11,6 +11,7 @@ from collections import defaultdict, deque
 
 from .data_structures import RoutingTier, RoutingResult, RouteSegment
 from .config import HALConfig
+from .crossing_detector import CrossingDetector
 
 # Layer definitions for (x,y,z) coordinate system
 # Tier 0 (qubit tier) layer assignments:
@@ -20,10 +21,11 @@ QUBIT_LAYER = 1    # Layer 1: Physical qubits (tier 0 only)
 
 
 class StraightLineRouter:
-    """Route edges as straight lines using Bresenham algorithm."""
+    """Route edges as straight lines with bump transitions for intersections."""
 
     def __init__(self, config: HALConfig):
         self.config = config
+        self.crossing_detector = CrossingDetector()
 
     def route_straight_line(self, start: Tuple[int, int], end: Tuple[int, int],
                            layer: int) -> List[Tuple[int, int, int]]:
@@ -39,6 +41,112 @@ class StraightLineRouter:
             List of (x, y, layer) positions forming path
         """
         return [(start[0], start[1], layer), (end[0], end[1], layer)]
+
+    def route_with_bump_transitions(self, start: Tuple[int, int], end: Tuple[int, int],
+                                   existing_routes: Dict, tier: 'RoutingTier') -> Optional[List[Tuple[int, int, int]]]:
+        """
+        Route edge with bump transitions to avoid intersections.
+
+        Args:
+            start: (x, y) start position
+            end: (x, y) end position
+            existing_routes: Dictionary of already routed edges
+            tier: Current routing tier
+
+        Returns:
+            List of (x, y, layer) positions forming path with bump transitions, or None if exceeds limit
+        """
+        # Separate existing segments by layer
+        segments_by_layer = {0: [], 1: []}
+
+        for route_info in existing_routes.values():
+            if route_info.get('tier') == tier.tier_id and route_info.get('path'):
+                route_path = route_info['path']
+                for i in range(len(route_path) - 1):
+                    p1 = route_path[i]
+                    p2 = route_path[i + 1]
+                    # Only consider segments on same layer
+                    if p1[2] == p2[2]:
+                        segment = ((p1[0], p1[1]), (p2[0], p2[1]))
+                        if p1[2] in segments_by_layer:
+                            segments_by_layer[p1[2]].append(segment)
+
+        # Build path with iterative bump transitions
+        path = []
+        current_layer = 0
+        current_pos = start
+        remaining_end = end
+        bump_count = 0
+
+        path.append((start[0], start[1], current_layer))
+
+        # Iteratively route segments, switching layers at crossings
+        while current_pos != remaining_end and bump_count < self.config.max_bump_transitions:
+            # Current segment to route
+            current_segment = ((current_pos[0], current_pos[1]), (remaining_end[0], remaining_end[1]))
+
+            # Check for intersections on current layer
+            test_segments = segments_by_layer[current_layer] + [current_segment]
+            layer_segments = {current_layer: test_segments}
+            intersections = self.crossing_detector.find_intersections_by_layer(layer_segments)
+
+            # Find intersections on our current segment
+            segment_intersections = []
+            for ix, iy in intersections.get(current_layer, []):
+                if self._point_on_segment(ix, iy, current_pos, remaining_end):
+                    # Exclude start/end points
+                    if not (abs(ix - current_pos[0]) < 1e-6 and abs(iy - current_pos[1]) < 1e-6) and \
+                       not (abs(ix - remaining_end[0]) < 1e-6 and abs(iy - remaining_end[1]) < 1e-6):
+                        segment_intersections.append((ix, iy))
+
+            if not segment_intersections:
+                # No intersections, route directly to end
+                path.append((remaining_end[0], remaining_end[1], current_layer))
+                break
+
+            # Sort by distance from current position
+            segment_intersections.sort(key=lambda p: ((p[0] - current_pos[0])**2 + (p[1] - current_pos[1])**2)**0.5)
+
+            # Take the closest intersection - use exact bentley-ottmann coordinates
+            ix, iy = segment_intersections[0]
+
+            # Route to bump position on current layer using exact intersection coordinates
+            path.append((ix, iy, current_layer))
+
+            # Add bump transition (switch layer) at exact same coordinates
+            current_layer = 1 - current_layer
+            path.append((ix, iy, current_layer))
+            bump_count += 1
+
+            # Update current position to exact bump location
+            current_pos = (ix, iy)
+
+        # Check if we exceeded bump limit
+        if bump_count >= self.config.max_bump_transitions and current_pos != remaining_end:
+            return None
+
+        return path
+
+    def _point_on_segment(self, px: float, py: float, start: Tuple[int, int], end: Tuple[int, int]) -> bool:
+        """Check if point lies on line segment."""
+        x1, y1 = start
+        x2, y2 = end
+
+        # Check if point is on line (within tolerance)
+        tolerance = 1e-6
+        cross_product = abs((py - y1) * (x2 - x1) - (px - x1) * (y2 - y1))
+        if cross_product > tolerance:
+            return False
+
+        # Check if point is within segment bounds
+        dot_product = (px - x1) * (x2 - x1) + (py - y1) * (y2 - y1)
+        squared_distance = (x2 - x1) ** 2 + (y2 - y1) ** 2
+
+        if squared_distance == 0:
+            return abs(px - x1) < tolerance and abs(py - y1) < tolerance
+
+        parameter = dot_product / squared_distance
+        return 0 <= parameter <= 1
 
 
 class AStarPathfinder:
@@ -111,9 +219,9 @@ class AStarPathfinder:
         if abs(x1 - x2) + abs(y1 - y2) > 1:
             cost *= 1.414  # sqrt(2) for diagonal moves
 
-        # Layer transition cost (bump bond)
-        if l1 != l2:
-            cost += 0.1  # Small penalty for layer changes
+        # Layer transition cost (bump bond) - no penalty for layer changes
+        # if l1 != l2:
+        #     cost += 0.1  # Small penalty for layer changes
 
         return cost
 
@@ -156,6 +264,7 @@ class RoutingEngine:
         self.config = config
         self.straight_router = StraightLineRouter(config)
         self.pathfinder = AStarPathfinder(config)
+        self.crossing_detector = CrossingDetector()
 
     def route_edges(self, graph: nx.Graph, node_positions: Dict[int, Tuple[int, int]],
                    planar_subgraph_edges: Set[Tuple[int, int]]) -> RoutingResult:
@@ -185,16 +294,32 @@ class RoutingEngine:
         planar_edges = [edge for edge in all_edges if edge in planar_subgraph_edges or
                        (edge[1], edge[0]) in planar_subgraph_edges]
 
-        # Sort by straight-line distance for optimal routing order
+        # Initialize FIFO with all edges, sorted by straight-line distance
+        # Put planar edges first, then non-planar edges
         planar_edges.sort(key=lambda e: self._calculate_straight_line_distance(e, node_positions))
+        non_planar_edges = [e for e in all_edges if e not in planar_edges]
+        non_planar_edges.sort(key=lambda e: self._calculate_straight_line_distance(e, node_positions))
 
-        remaining_edges = set(all_edges) - set(planar_edges)
+        edge_queue = deque(planar_edges + non_planar_edges)
 
-        print(f"Tier 0: Routing {len(planar_edges)} planar edges on layer {QUBIT_LAYER}")
+        print(f"Tier 0: Processing {len(edge_queue)} edges ({len(planar_edges)} planar, {len(non_planar_edges)} non-planar)")
 
-        # Route planar edges on qubit tier
-        for edge in planar_edges:
-            path = self._route_edge_on_qubit_tier(edge, node_positions)
+        # Route edges on qubit tier using straight-line only
+        attempted_edges = set()
+        while edge_queue:
+            edge = edge_queue.popleft()
+
+            # Check for tier congestion (edge attempted twice)
+            if edge in attempted_edges:
+                print(f"Tier 0 congested - edge {edge} already attempted")
+                # Put this edge and all remaining back for next tier
+                edge_queue.appendleft(edge)
+                break
+
+            attempted_edges.add(edge)
+
+            # Only try straight-line routing on tier 0 (no bump transitions)
+            path = self._route_edge_on_qubit_tier_simple(edge, node_positions, edge_routes)
             if path:
                 edge_routes[edge] = {
                     'path': path,
@@ -203,10 +328,10 @@ class RoutingEngine:
                 }
                 tier_usage[0] += 1
             else:
-                # Failed planar edges escalate to higher tiers
-                remaining_edges.add(edge)
-                print(f"Warning: Planar edge {edge} failed on tier 0, escalating")
+                # Failed edge goes back to queue for next tier
+                edge_queue.append(edge)
 
+        remaining_edges = set(edge_queue)
         print(f"Tier 0: Routed {tier_usage[0]} edges, {len(remaining_edges)} remaining")
 
         # Step 2: Route remaining edges on higher tiers
@@ -222,23 +347,28 @@ class RoutingEngine:
             # Add TSVs for incident nodes
             self._add_tsvs_for_edges(remaining_edges, current_tier, node_positions)
 
-            # Process edges in FIFO order by length
+            # Process edges from previous tier's queue + any failed edges
+            # Sort by straight-line distance (FIFO order by length)
             edge_queue = deque(sorted(remaining_edges,
                                     key=lambda e: self._calculate_straight_line_distance(e, node_positions)))
 
             routed_this_tier = set()
             attempted_edges = set()
+            failed_edges = set()
 
             while edge_queue:
                 edge = edge_queue.popleft()
 
-                # Check for congestion (edge attempted twice on same tier)
+                # Check for tier congestion (edge attempted twice on same tier)
                 if edge in attempted_edges:
-                    print(f"Tier {current_tier_id} congested - escalating remaining edges")
-                    break
+                    print(f"Tier {current_tier_id} congested - escalating edge {edge} to next tier")
+                    # Put edge back for next tier
+                    failed_edges.add(edge)
+                    continue
 
                 attempted_edges.add(edge)
-                path, routing_method = self._route_edge_on_higher_tier(edge, node_positions, current_tier)
+                u, v = edge
+                path, routing_method = self._route_edge_on_higher_tier(edge, node_positions, current_tier, edge_routes)
 
                 if path:
                     edge_routes[edge] = {
@@ -246,14 +376,20 @@ class RoutingEngine:
                         'tier': current_tier_id,
                         'routing_method': routing_method
                     }
+
+                    # Track bump transitions in tier
+                    bump_transitions = self._extract_bump_transitions(path)
+                    for bump_pos in bump_transitions:
+                        current_tier.bump_transitions[bump_pos] = edge
+
                     routed_this_tier.add(edge)
                     tier_usage[current_tier_id] += 1
                 else:
-                    # Failed edge will be reattempted on next tier
-                    pass
+                    # Failed edge goes back to end of queue for retry on this tier
+                    edge_queue.append(edge)
 
-            # Update remaining edges
-            remaining_edges -= routed_this_tier
+            # Combine remaining edges from queue and failed edges for next tier
+            remaining_edges = set(edge_queue) | failed_edges
             print(f"Tier {current_tier_id}: Routed {len(routed_this_tier)} edges")
 
             current_tier_id += 1
@@ -289,9 +425,10 @@ class RoutingEngine:
             bump_transitions={}
         )
 
-    def _route_edge_on_qubit_tier(self, edge: Tuple[int, int],
-                                 node_positions: Dict[int, Tuple[int, int]]) -> Optional[List[Tuple[int, int, int]]]:
-        """Route edge on qubit tier using only layer 1."""
+    def _route_edge_on_qubit_tier_simple(self, edge: Tuple[int, int],
+                                        node_positions: Dict[int, Tuple[int, int]],
+                                        existing_routes: Dict) -> Optional[List[Tuple[int, int, int]]]:
+        """Route edge on qubit tier using only straight-line on layer 1 with crossing detection."""
         u, v = edge
         if u not in node_positions or v not in node_positions:
             return None
@@ -299,13 +436,19 @@ class RoutingEngine:
         start_pos = node_positions[u]
         end_pos = node_positions[v]
 
-        # Only straight-line routing on QUBIT_LAYER
-        return self.straight_router.route_straight_line(start_pos, end_pos, QUBIT_LAYER)
+        # Simple straight-line routing on QUBIT_LAYER
+        proposed_path = self.straight_router.route_straight_line(start_pos, end_pos, QUBIT_LAYER)
+
+        # Check for crossings with existing routes - if crossing detected, fail this edge
+        if self._would_cross_existing_routes(proposed_path, existing_routes, 0):
+            return None  # Edge fails and goes to FIFO queue for higher tier
+
+        return proposed_path
 
     def _route_edge_on_higher_tier(self, edge: Tuple[int, int],
                                   node_positions: Dict[int, Tuple[int, int]],
-                                  tier: RoutingTier) -> Tuple[Optional[List[Tuple[int, int, int]]], str]:
-        """Route edge on higher tier using straight-line then A*."""
+                                  tier: RoutingTier, existing_routes: Dict) -> Tuple[Optional[List[Tuple[int, int, int]]], str]:
+        """Route edge on higher tier using straight-line with bump transitions then A*."""
         u, v = edge
         if u not in node_positions or v not in node_positions:
             return None, 'failed'
@@ -313,18 +456,20 @@ class RoutingEngine:
         start_pos = node_positions[u]
         end_pos = node_positions[v]
 
-        # Try straight-line routing on each layer
-        for layer in range(tier.grid.shape[2]):
-            path = self.straight_router.route_straight_line(start_pos, end_pos, layer)
-            if path:  # Accept all straight-line paths for simplicity
-                return path, 'straight_line'
+        # Try straight-line routing with bump transitions
+        path = self.straight_router.route_with_bump_transitions(start_pos, end_pos, existing_routes, tier)
+        if path:
+            return path, 'straight_line_bumps'
 
-        # Try A* pathfinding
+        # Try A* pathfinding with vertical moves
         start_3d = (start_pos[0], start_pos[1], 0)  # Start on layer 0
         end_3d = (end_pos[0], end_pos[1], 0)      # End on layer 0
 
         path = self.pathfinder.find_path(start_3d, end_3d, tier.grid.shape)
         if path:
+            # Validate A* path doesn't create crossings
+            if self._would_cross_existing_routes(path, existing_routes, tier.tier_id):
+                return None, 'failed'  # A* path would create crossings
             return path, 'astar'
         else:
             return None, 'failed'
@@ -341,6 +486,61 @@ class RoutingEngine:
             if node in node_positions:
                 x, y = node_positions[node]
                 tier.tsvs.add((x, y))
+
+    def _would_cross_existing_routes(self, proposed_path: List[Tuple[int, int, int]],
+                                   existing_routes: Dict, tier_id: int) -> bool:
+        """Check if proposed path would cross any existing routes on the same tier."""
+        if not proposed_path or len(proposed_path) < 2:
+            return False
+
+        # Get existing segments on the same tier, grouped by layer
+        segments_by_layer = {0: [], 1: []}
+
+        for route_info in existing_routes.values():
+            if route_info.get('tier') == tier_id and route_info.get('path'):
+                route_path = route_info['path']
+                for i in range(len(route_path) - 1):
+                    p1 = route_path[i]
+                    p2 = route_path[i + 1]
+                    if p1[2] == p2[2]:  # Same layer segment
+                        segment = ((p1[0], p1[1]), (p2[0], p2[1]))
+                        if p1[2] in segments_by_layer:
+                            segments_by_layer[p1[2]].append(segment)
+
+        # Convert proposed path to segments by layer
+        proposed_segments_by_layer = {0: [], 1: []}
+        for i in range(len(proposed_path) - 1):
+            p1 = proposed_path[i]
+            p2 = proposed_path[i + 1]
+            if p1[2] == p2[2]:  # Same layer segment
+                segment = ((p1[0], p1[1]), (p2[0], p2[1]))
+                if p1[2] in proposed_segments_by_layer:
+                    proposed_segments_by_layer[p1[2]].append(segment)
+
+        # Check for intersections on each layer
+        for layer in [0, 1]:
+            if proposed_segments_by_layer[layer] and segments_by_layer[layer]:
+                # Check if proposed segments cross existing segments on this layer
+                proposed_segments = proposed_segments_by_layer[layer]
+                existing_segments = segments_by_layer[layer]
+
+                # Test proposed segments against existing segments
+                test_segments = existing_segments + proposed_segments
+                layer_segments = {layer: test_segments}
+                intersections = self.crossing_detector.find_intersections_by_layer(layer_segments)
+
+                if intersections.get(layer, []):
+                    return True  # Found crossing
+
+        return False
+
+    def _extract_bump_transitions(self, path: List[Tuple[int, int, int]]) -> List[Tuple[int, int]]:
+        """Extract bump transition positions from path."""
+        bump_positions = []
+        for i in range(len(path) - 1):
+            if path[i][2] != path[i + 1][2]:  # Layer change
+                bump_positions.append((path[i][0], path[i][1]))
+        return bump_positions
 
     def _calculate_straight_line_distance(self, edge: Tuple[int, int],
                                         node_positions: Dict[int, Tuple[int, int]]) -> float:

@@ -175,10 +175,38 @@ class HALVisualizer:
                         print(f"  Found {len(intersections)} intersections")
 
                         if intersections:
-                            intersection_x = [pt[0] for pt in intersections]
-                            intersection_y = [pt[1] for pt in intersections]
-                            ax.scatter(intersection_x, intersection_y, c='magenta', s=50,
-                                     marker='o', alpha=1.0, zorder=15, edgecolor='black', linewidth=1)
+                            # Filter out intersections where bump bonds already exist
+                            bump_positions = set()
+                            for edge, route_info in layout.edge_routes.items():
+                                if not route_info or not route_info.get('path'):
+                                    continue
+                                edge_tier = route_info.get('tier', 0)
+                                if edge_tier != tier_id:
+                                    continue
+                                path = route_info['path']
+                                for i in range(len(path) - 1):
+                                    if path[i][2] != path[i + 1][2]:  # Layer change = bump bond
+                                        bump_positions.add((path[i][0], path[i][1]))
+
+                            # Only show intersections that don't have bump bonds
+                            # Use more precise coordinate matching
+                            filtered_intersections = []
+                            for pt in intersections:
+                                has_bump = False
+                                for bump_x, bump_y in bump_positions:
+                                    # Use exact coordinate comparison (bump bonds should be at exact intersection points)
+                                    if (abs(pt[0] - bump_x) < 1e-10 and abs(pt[1] - bump_y) < 1e-10) or \
+                                       (pt[0] == bump_x and pt[1] == bump_y):
+                                        has_bump = True
+                                        break
+                                if not has_bump:
+                                    filtered_intersections.append(pt)
+
+                            if filtered_intersections:
+                                intersection_x = [pt[0] for pt in filtered_intersections]
+                                intersection_y = [pt[1] for pt in filtered_intersections]
+                                ax.scatter(intersection_x, intersection_y, c='magenta', s=50,
+                                         marker='o', alpha=1.0, zorder=15, edgecolor='black', linewidth=1)
 
             # Add TSV markers in red
             if tier.tsvs:
@@ -316,10 +344,35 @@ class HALVisualizer:
                     qubit_positions = set(layout.node_positions.values()) if layout.node_positions else set()
                     intersections = tier.crossing_detector._find_intersections_from_segments(segments, qubit_positions)
                     if intersections:
-                        intersection_x = [pt[0] for pt in intersections]
-                        intersection_y = [pt[1] for pt in intersections]
-                        plt.scatter(intersection_x, intersection_y, c='magenta', s=50,
-                                   marker='o', alpha=1.0, zorder=15, edgecolor='black', linewidth=1)
+                        # Filter out intersections where bump bonds already exist
+                        bump_positions = set()
+                        for edge, route_info in layout.edge_routes.items():
+                            if not route_info or not route_info.get('path'):
+                                continue
+                            path = route_info['path']
+                            for i in range(len(path) - 1):
+                                if path[i][2] != path[i + 1][2]:  # Layer change = bump bond
+                                    bump_positions.add((path[i][0], path[i][1]))
+
+                        # Only show intersections that don't have bump bonds
+                        # Use more precise coordinate matching
+                        filtered_intersections = []
+                        for pt in intersections:
+                            has_bump = False
+                            for bump_x, bump_y in bump_positions:
+                                # Use exact coordinate comparison (bump bonds should be at exact intersection points)
+                                if (abs(pt[0] - bump_x) < 1e-10 and abs(pt[1] - bump_y) < 1e-10) or \
+                                   (pt[0] == bump_x and pt[1] == bump_y):
+                                    has_bump = True
+                                    break
+                            if not has_bump:
+                                filtered_intersections.append(pt)
+
+                        if filtered_intersections:
+                            intersection_x = [pt[0] for pt in filtered_intersections]
+                            intersection_y = [pt[1] for pt in filtered_intersections]
+                            plt.scatter(intersection_x, intersection_y, c='magenta', s=50,
+                                       marker='o', alpha=1.0, zorder=15, edgecolor='black', linewidth=1)
 
         # Add TSV markers if they exist
         if layout.tiers and layout.tiers[0].tsvs:

@@ -4,221 +4,75 @@ Placement engine for HAL algorithm with spring layout and rasterization.
 
 import numpy as np
 import networkx as nx
+import networkx.algorithms.community as nx_community
 from typing import Dict, List, Set, Tuple, Optional
 import heapq
 from collections import defaultdict
 
-from .graph_utils import CommunityDetector, PlanarityTester, GraphAnalyzer
+from .graph_utils import PlanarityTester, GraphAnalyzer
 from .data_structures import PlacementResult
 from .config import HALConfig
 
 
-class SpringLayout:
-    """Kamada-Kawai spring layout optimization."""
-    
+class CommunityDetector:
+    """Community detection using NetworkX Louvain algorithm."""
+
     def __init__(self, graph: nx.Graph, config: HALConfig):
         self.graph = graph
         self.config = config
-        self.analyzer = GraphAnalyzer(graph)
-        
-    def compute_layout(self, planar_subgraph_edges: Set[Tuple[int, int]]) -> Dict[int, Tuple[float, float]]:
-        """Compute spring layout positions for nodes."""
-        nodes = list(self.graph.nodes())
-        n = len(nodes)
-        
-        if n == 0:
+
+    def detect_communities(self) -> Dict[int, int]:
+        """Detect communities using Louvain algorithm."""
+        if self.graph.number_of_nodes() == 0:
             return {}
-        if n == 1:
-            return {nodes[0]: (0.0, 0.0)}
-        
-        # Construct planar subgraph for distance computation
-        planar_graph = nx.Graph()
-        planar_graph.add_nodes_from(self.graph.nodes())
-        planar_graph.add_edges_from(planar_subgraph_edges or [])
-        
-        # Compute distances on planar subgraph if provided, otherwise use full graph
+
+        community_sets = nx_community.louvain_communities(
+            self.graph,
+            resolution=getattr(self.config, 'community_resolution', 1.0),
+            seed=self.config.random_seed
+        )
+
+        communities = {}
+        for community_id, community_set in enumerate(community_sets):
+            for node in community_set:
+                communities[node] = community_id
+
+        return communities
+
+
+class SpringLayout:
+    """Spring layout using NetworkX built-in algorithms."""
+
+    def __init__(self, graph: nx.Graph, config: HALConfig):
+        self.graph = graph
+        self.config = config
+
+    def compute_layout(self, planar_subgraph_edges: Set[Tuple[int, int]]) -> Dict[int, Tuple[float, float]]:
+        """Compute spring layout positions for nodes using NetworkX."""
+        if len(self.graph.nodes()) == 0:
+            return {}
+        if len(self.graph.nodes()) == 1:
+            return {list(self.graph.nodes())[0]: (0.0, 0.0)}
+
+        # Use the planar subgraph if provided, otherwise use full graph
+        layout_graph = self.graph
         if planar_subgraph_edges:
-            distances = dict(nx.all_pairs_shortest_path_length(planar_graph))
-        else:
-            distances = self.analyzer.compute_all_pairs_shortest_paths()
-        
-        # Calculate spring constant parameter for distance scaling
-        if self.config.spring_layout_k is None:
-            total_dist = sum(distances.get((u, v), float('inf')) for u in nodes for v in nodes if u != v and distances.get((u, v), float('inf')) != float('inf'))
-            k = np.sqrt(1.0 / n) if total_dist == 0 else np.sqrt(1.0 / n) * np.sqrt(total_dist / (n * (n - 1)))
-        else:
-            k = self.config.spring_layout_k
-        
-        # Initialize node positions with random distribution optimized for auxiliary grid
+            layout_graph = nx.Graph()
+            layout_graph.add_nodes_from(self.graph.nodes())
+            layout_graph.add_edges_from(planar_subgraph_edges)
+
+        # Set random seed for reproducibility
         np.random.seed(self.config.random_seed)
-        initial_pos = np.random.rand(n, 2) * 6 - 3  # Random positions in [-3, 3] for better spread
-        
-        # Apply exact Kamada-Kawai energy minimization algorithm
-        def energy_function(pos):
-            """
-            Exact Kamada-Kawai global energy function that minimizes squared differences
-            between graph-theoretic distances and their corresponding Euclidean distances.
-            """
-            pos = pos.reshape(n, 2)
-            total_energy = 0.0
-            
-            for i, u in enumerate(nodes):
-                for j, v in enumerate(nodes):
-                    if i >= j:
-                        continue
-                        
-                    # Graph-theoretic distance between nodes u and v
-                    d_ij = distances.get((u, v), float('inf'))
-                    if d_ij == float('inf') or d_ij == 0:
-                        continue
-                    
-                    # Current Euclidean distance in layout
-                    euclidean_dist = np.linalg.norm(pos[i] - pos[j])
-                    
-                    # Ideal distance scaled by spring constant
-                    l_ij = k * d_ij
-                    
-                    # Spring constant between nodes i and j
-                    k_ij = 1.0 / (d_ij * d_ij) if d_ij > 0 else 0.0
-                    
-                    # Exact Kamada-Kawai energy: k_ij * (euclidean_dist - l_ij)^2
-                    energy_contribution = k_ij * (euclidean_dist - l_ij) ** 2
-                    total_energy += energy_contribution
-            
-            return total_energy
-        
-        try:
-            # Apply conjugate gradient optimization as specified in HAL paper
-            optimized_pos = self._conjugate_gradient_optimization(
-                energy_function, initial_pos, n, self.config.spring_layout_iterations
-            )
-        except:
-            # Graceful fallback to gradient descent on optimization failure
-            optimized_pos = self._gradient_descent_optimization(
-                energy_function, initial_pos, n, self.config.spring_layout_iterations
-            )
-        
-        # Transform array results to node position dictionary
-        positions = {}
-        for i, node in enumerate(nodes):
-            positions[node] = (float(optimized_pos[i, 0]), float(optimized_pos[i, 1]))
-        
-        return positions
-    
-    def _conjugate_gradient_optimization(self, energy_function, initial_pos, n, max_iterations):
-        """Conjugate gradient optimization for Kamada-Kawai energy minimization.
-        
-        Implements conjugate gradient method as referenced in HAL paper for
-        minimizing spring layout energy function.
-        """
-        pos = initial_pos.copy().flatten()
-        
-        def compute_gradient(x):
-            """Compute gradient using finite differences."""
-            grad = np.zeros_like(x)
-            epsilon = 1e-6
-            base_energy = energy_function(x)
-            
-            for i in range(len(x)):
-                x_plus = x.copy()
-                x_plus[i] += epsilon
-                grad[i] = (energy_function(x_plus) - base_energy) / epsilon
-                
-            return grad
-        
-        # Initialize conjugate gradient variables
-        gradient = compute_gradient(pos)
-        search_direction = -gradient.copy()
-        
-        for iteration in range(max_iterations):
-            # Line search to find optimal step size
-            step_size = self._line_search(energy_function, pos, search_direction)
-            
-            if step_size == 0:
-                break
-                
-            # Update position
-            new_pos = pos + step_size * search_direction
-            new_gradient = compute_gradient(new_pos)
-            
-            # Check convergence
-            if np.linalg.norm(new_gradient) < 1e-4:
-                pos = new_pos
-                break
-            
-            # Compute conjugate coefficient using Polak-Ribiere formula
-            beta = max(0, np.dot(new_gradient, new_gradient - gradient) / np.dot(gradient, gradient))
-            
-            # Update search direction
-            search_direction = -new_gradient + beta * search_direction
-            
-            # Update variables for next iteration
-            pos = new_pos
-            gradient = new_gradient
-        
-        return pos.reshape(n, 2)
-    
-    def _line_search(self, energy_function, pos, direction, alpha_max=1.0, c1=1e-4, max_iter=20):
-        """Simple backtracking line search for conjugate gradient method."""
-        alpha = alpha_max
-        base_energy = energy_function(pos)
-        gradient_direction_dot = np.dot(self._compute_simple_gradient(energy_function, pos), direction)
-        
-        for _ in range(max_iter):
-            new_energy = energy_function(pos + alpha * direction)
-            
-            # Armijo condition for sufficient decrease
-            if new_energy <= base_energy + c1 * alpha * gradient_direction_dot:
-                return alpha
-            
-            alpha *= 0.5
-        
-        return 0.0
-    
-    def _compute_simple_gradient(self, energy_function, pos):
-        """Simple gradient computation for line search."""
-        grad = np.zeros_like(pos)
-        epsilon = 1e-6
-        base_energy = energy_function(pos)
-        
-        for i in range(len(pos)):
-            pos_plus = pos.copy()
-            pos_plus[i] += epsilon
-            grad[i] = (energy_function(pos_plus) - base_energy) / epsilon
-            
-        return grad
-    
-    def _gradient_descent_optimization(self, energy_function, initial_pos, n, max_iterations):
-        """Gradient descent fallback optimization method."""
-        pos = initial_pos.copy()
-        learning_rate = 0.01
-        epsilon = 1e-6
-        
-        for iteration in range(max_iterations):
-            # Compute numerical gradient using finite differences
-            gradient = np.zeros_like(pos)
-            current_energy = energy_function(pos.flatten())
-            
-            for i in range(pos.shape[0]):
-                for j in range(pos.shape[1]):
-                    pos_plus = pos.copy()
-                    pos_plus[i, j] += epsilon
-                    energy_plus = energy_function(pos_plus.flatten())
-                    
-                    gradient[i, j] = (energy_plus - current_energy) / epsilon
-            
-            # Update position with gradient descent
-            pos -= learning_rate * gradient
-            
-            # Adaptive learning rate adjustment
-            if iteration % 10 == 0:
-                learning_rate *= 0.95
-            
-            # Early termination on convergence
-            if np.linalg.norm(gradient) < 1e-4:
-                break
-        
-        return pos
+
+        # Use NetworkX Kamada-Kawai layout (equivalent to paper's algorithm)
+        positions = nx.kamada_kawai_layout(
+            layout_graph,
+            scale=3.0,  # Scale to match original [-3, 3] range
+            weight=None  # Use unit weights for all edges
+        )
+
+        # Convert to format expected by rest of pipeline
+        return {node: (float(pos[0]), float(pos[1])) for node, pos in positions.items()}
 
 
 class GridRasterizer:
@@ -523,38 +377,35 @@ class PlacementEngine:
     def _algorithmic_placement(self, graph: nx.Graph) -> Tuple[Dict[int, Tuple[int, int]], Set[Tuple[int, int]], Dict[int, int]]:
         """Perform algorithmic placement using community detection and spring layout."""
         
-        # Step 1: Community detection (enhanced with Louvain as per paper)
+        # Step 1: Community detection using Louvain algorithm
         community_detector = CommunityDetector(graph, self.config)
         communities = community_detector.detect_communities()
-        
-        # Step 2: Initial spring layout for position-dependent edge prioritization
-        self.spring_layout = SpringLayout(graph, self.config)
-        # Use empty planar subgraph initially to get rough positions
-        initial_positions = self.spring_layout.compute_layout(set())
-        
-        # Step 3: Extract planar subgraph using position-dependent edge priorities
+
+        # Step 2: Edge prioritization using communities and graph distances
         analyzer = GraphAnalyzer(graph)
-        edge_priorities = analyzer.get_edge_priorities(communities, initial_positions)
-        
+        edge_priorities = analyzer.get_edge_priorities(communities, node_positions=None)
+
+        # Step 3: Extract planar subgraph using incremental planarity testing
         planarity_tester = PlanarityTester(graph)
         planar_edges = planarity_tester.get_planar_subgraph(edge_priorities)
-        
-        # Step 4: Refined spring layout on extracted planar subgraph
+
+        # Step 4: Spring layout on extracted planar subgraph only
+        self.spring_layout = SpringLayout(graph, self.config)
         continuous_positions = self.spring_layout.compute_layout(planar_edges)
         
         # Step 4: Calculate auxiliary grid dimensions (like paper's approach)
         auxiliary_grid_size = self._calculate_auxiliary_grid_dimensions(len(graph.nodes()))
         
         # Step 5: Rasterize continuous positions to grid coordinates
-        final_positions = self.rasterizer.rasterize_positions(continuous_positions, auxiliary_grid_size)
-        
+        node_positions = self.rasterizer.rasterize_positions(continuous_positions, auxiliary_grid_size)
+
         # Step 6: Apply grid compaction with monotone remapping
-        final_positions = self.rasterizer.compact_grid(final_positions)
-        
+        node_positions = self.rasterizer.compact_grid(node_positions)
+
         # Step 7: Add spacing between qubits for routing infrastructure
-        final_positions = self._add_qubit_spacing(final_positions, spacing=self.config.qubit_spacing)
-        
-        return final_positions, planar_edges, communities
+        node_positions = self._add_qubit_spacing(node_positions, spacing=self.config.qubit_spacing)
+
+        return node_positions, planar_edges, communities
     
     def _calculate_auxiliary_grid_dimensions(self, n_logical_qubits: int) -> Tuple[int, int]:
         """

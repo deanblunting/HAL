@@ -14,6 +14,32 @@ from .data_structures import PlacementResult
 from .config import HALConfig
 
 
+class CommunityDetector:
+    """Community detection using NetworkX Louvain algorithm."""
+
+    def __init__(self, graph: nx.Graph, config: HALConfig):
+        self.graph = graph
+        self.config = config
+
+    def detect_communities(self) -> Dict[int, int]:
+        """Detect communities using Louvain algorithm."""
+        if self.graph.number_of_nodes() == 0:
+            return {}
+
+        community_sets = nx_community.louvain_communities(
+            self.graph,
+            resolution=getattr(self.config, 'community_resolution', 1.0),
+            seed=self.config.random_seed
+        )
+
+        communities = {}
+        for community_id, community_set in enumerate(community_sets):
+            for node in community_set:
+                communities[node] = community_id
+
+        return communities
+
+
 class SpringLayout:
     """Spring layout using NetworkX built-in algorithms."""
 
@@ -316,15 +342,8 @@ class PlacementEngine:
             
             # Run normal MPS extraction on the given graph
             # Step 1: Community detection for edge prioritization
-            community_sets = nx_community.louvain_communities(
-                graph,
-                resolution=getattr(self.config, 'community_resolution', 1.0),
-                seed=self.config.random_seed
-            )
-            communities = {}
-            for community_id, community_set in enumerate(community_sets):
-                for node in community_set:
-                    communities[node] = community_id
+            community_detector = CommunityDetector(graph, self.config)
+            communities = community_detector.detect_communities()
             
             # Step 2: Extract planar subgraph using position-dependent edge priorities
             analyzer = GraphAnalyzer(graph)
@@ -358,45 +377,35 @@ class PlacementEngine:
     def _algorithmic_placement(self, graph: nx.Graph) -> Tuple[Dict[int, Tuple[int, int]], Set[Tuple[int, int]], Dict[int, int]]:
         """Perform algorithmic placement using community detection and spring layout."""
         
-        # Step 1: Community detection (enhanced with Louvain as per paper)
-        community_sets = nx_community.louvain_communities(
-            graph,
-            resolution=getattr(self.config, 'community_resolution', 1.0),
-            seed=self.config.random_seed
-        )
-        communities = {}
-        for community_id, community_set in enumerate(community_sets):
-            for node in community_set:
-                communities[node] = community_id
-        
-        # Step 2: Initial spring layout for position-dependent edge prioritization
-        self.spring_layout = SpringLayout(graph, self.config)
-        # Use empty planar subgraph initially to get rough positions
-        initial_positions = self.spring_layout.compute_layout(set())
-        
-        # Step 3: Extract planar subgraph using position-dependent edge priorities
+        # Step 1: Community detection using Louvain algorithm
+        community_detector = CommunityDetector(graph, self.config)
+        communities = community_detector.detect_communities()
+
+        # Step 2: Edge prioritization using communities and graph distances
         analyzer = GraphAnalyzer(graph)
-        edge_priorities = analyzer.get_edge_priorities(communities, initial_positions)
-        
+        edge_priorities = analyzer.get_edge_priorities(communities, node_positions=None)
+
+        # Step 3: Extract planar subgraph using incremental planarity testing
         planarity_tester = PlanarityTester(graph)
         planar_edges = planarity_tester.get_planar_subgraph(edge_priorities)
-        
-        # Step 4: Refined spring layout on extracted planar subgraph
+
+        # Step 4: Spring layout on extracted planar subgraph only
+        self.spring_layout = SpringLayout(graph, self.config)
         continuous_positions = self.spring_layout.compute_layout(planar_edges)
         
         # Step 4: Calculate auxiliary grid dimensions (like paper's approach)
         auxiliary_grid_size = self._calculate_auxiliary_grid_dimensions(len(graph.nodes()))
         
         # Step 5: Rasterize continuous positions to grid coordinates
-        final_positions = self.rasterizer.rasterize_positions(continuous_positions, auxiliary_grid_size)
-        
+        node_positions = self.rasterizer.rasterize_positions(continuous_positions, auxiliary_grid_size)
+
         # Step 6: Apply grid compaction with monotone remapping
-        final_positions = self.rasterizer.compact_grid(final_positions)
-        
+        node_positions = self.rasterizer.compact_grid(node_positions)
+
         # Step 7: Add spacing between qubits for routing infrastructure
-        final_positions = self._add_qubit_spacing(final_positions, spacing=self.config.qubit_spacing)
-        
-        return final_positions, planar_edges, communities
+        node_positions = self._add_qubit_spacing(node_positions, spacing=self.config.qubit_spacing)
+
+        return node_positions, planar_edges, communities
     
     def _calculate_auxiliary_grid_dimensions(self, n_logical_qubits: int) -> Tuple[int, int]:
         """

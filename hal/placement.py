@@ -4,11 +4,12 @@ Placement engine for HAL algorithm with spring layout and rasterization.
 
 import numpy as np
 import networkx as nx
+import networkx.algorithms.community as nx_community
 from typing import Dict, List, Set, Tuple, Optional
 import heapq
 from collections import defaultdict
 
-from .graph_utils import CommunityDetector, PlanarityTester, GraphAnalyzer
+from .graph_utils import PlanarityTester, GraphAnalyzer
 from .data_structures import PlacementResult
 from .config import HALConfig
 
@@ -315,8 +316,15 @@ class PlacementEngine:
             
             # Run normal MPS extraction on the given graph
             # Step 1: Community detection for edge prioritization
-            community_detector = CommunityDetector(graph, self.config)
-            communities = community_detector.detect_communities()
+            community_sets = nx_community.louvain_communities(
+                graph,
+                resolution=getattr(self.config, 'community_resolution', 1.0),
+                seed=self.config.random_seed
+            )
+            communities = {}
+            for community_id, community_set in enumerate(community_sets):
+                for node in community_set:
+                    communities[node] = community_id
             
             # Step 2: Extract planar subgraph using position-dependent edge priorities
             analyzer = GraphAnalyzer(graph)
@@ -351,8 +359,15 @@ class PlacementEngine:
         """Perform algorithmic placement using community detection and spring layout."""
         
         # Step 1: Community detection (enhanced with Louvain as per paper)
-        community_detector = CommunityDetector(graph, self.config)
-        communities = community_detector.detect_communities()
+        community_sets = nx_community.louvain_communities(
+            graph,
+            resolution=getattr(self.config, 'community_resolution', 1.0),
+            seed=self.config.random_seed
+        )
+        communities = {}
+        for community_id, community_set in enumerate(community_sets):
+            for node in community_set:
+                communities[node] = community_id
         
         # Step 2: Initial spring layout for position-dependent edge prioritization
         self.spring_layout = SpringLayout(graph, self.config)

@@ -164,15 +164,9 @@ class HALVisualizer:
                 # Find intersections for each layer
                 for layer, segments in segments_by_layer.items():
                     if len(segments) > 1:
-                        # Debug: print segments info
-                        print(f"Tier {tier_id}, Layer {layer}: {len(segments)} segments")
-                        for i, seg in enumerate(segments[:5]):  # Print first 5 segments
-                            print(f"  Segment {i}: {seg}")
-
                         # Get qubit positions to exclude from intersection detection
                         qubit_positions = set(layout.node_positions.values()) if layout.node_positions else set()
                         intersections = tier.crossing_detector._find_intersections_from_segments(segments, qubit_positions)
-                        print(f"  Found {len(intersections)} intersections")
 
                         if intersections:
                             # Filter out intersections where bump bonds already exist

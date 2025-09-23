@@ -408,6 +408,9 @@ class RoutingEngine:
         # Mark any remaining edges as unrouted
         unrouted_edges = remaining_edges
 
+        # Remove empty tiers to clean up visualization
+        tiers, edge_routes = self._remove_empty_tiers(tiers, edge_routes, tier_usage)
+
         # Calculate metrics
         metrics = self._calculate_metrics(edge_routes, tiers, tier_usage)
 
@@ -614,3 +617,56 @@ class RoutingEngine:
             'bumps': total_bumps / num_edges if num_edges > 0 else 0.0,
             'tsvs': total_tsvs / num_edges if num_edges > 0 else 0.0
         }
+
+    def _remove_empty_tiers(self, tiers: List[RoutingTier], edge_routes: Dict,
+                           tier_usage: Dict[int, int]) -> Tuple[List[RoutingTier], Dict]:
+        """
+        Remove tiers that have no routed edges and update tier IDs accordingly.
+
+        Args:
+            tiers: List of routing tiers
+            edge_routes: Dictionary mapping edges to their routing information
+            tier_usage: Dictionary tracking number of edges per tier
+
+        Returns:
+            Tuple of (cleaned_tiers, updated_edge_routes)
+        """
+        # Identify tiers with actual routes
+        used_tier_ids = set()
+        for route_info in edge_routes.values():
+            tier_id = route_info.get('tier', 0)
+            used_tier_ids.add(tier_id)
+
+        # Always keep tier 0 (qubit tier) even if empty
+        used_tier_ids.add(0)
+
+        # Create mapping from old tier IDs to new tier IDs
+        old_to_new_tier_id = {}
+        new_tier_counter = 0
+
+        # Build tier ID mapping
+        for old_tier_id in sorted(used_tier_ids):
+            old_to_new_tier_id[old_tier_id] = new_tier_counter
+            new_tier_counter += 1
+
+        # Create new tier list with only used tiers
+        new_tiers = []
+        for tier in tiers:
+            if tier.tier_id in used_tier_ids:
+                # Update tier ID
+                tier.tier_id = old_to_new_tier_id[tier.tier_id]
+                new_tiers.append(tier)
+
+        # Update edge_routes with new tier IDs
+        updated_edge_routes = {}
+        for edge, route_info in edge_routes.items():
+            old_tier_id = route_info.get('tier', 0)
+            new_tier_id = old_to_new_tier_id.get(old_tier_id, 0)
+
+            updated_route_info = route_info.copy()
+            updated_route_info['tier'] = new_tier_id
+            updated_edge_routes[edge] = updated_route_info
+
+        print(f"Tier cleanup: {len(tiers)} -> {len(new_tiers)} tiers")
+
+        return new_tiers, updated_edge_routes

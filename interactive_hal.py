@@ -181,7 +181,11 @@ def main():
         # Create visualization
         print("\nCreating visualization...")
         try:
-            hal.visualize_layout(layout)
+            # Pass n, k, d parameters if available
+            if 'n' in graph_params and 'k' in graph_params and 'd' in graph_params:
+                hal.visualize_layout(layout, n=graph_params['n'], k=graph_params['k'], d=graph_params['d'])
+            else:
+                hal.visualize_layout(layout)
             print("Visualization complete!")
         except Exception as e:
             print(f"Visualization error: {e}")

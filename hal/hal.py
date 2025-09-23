@@ -330,14 +330,17 @@ class HAL:
             'max_efficiency': np.max(efficiencies) if efficiencies else 0.0
         }
     
-    def visualize_layout(self, layout: QECCLayout) -> None:
+    def visualize_layout(self, layout: QECCLayout, n: int = None, k: int = None, d: int = None) -> None:
         """
         Visualize layout using built-in visualizer.
-        
+
         Args:
             layout: QECCLayout to visualize
+            n: Total number of qubits
+            k: Number of logical qubits
+            d: Minimum distance
         """
-        self.visualizer.plot_layout(layout)
+        self.visualizer.plot_layout(layout, n, k, d)
     
     def visualize_cost_analysis(self, layout: QECCLayout, show_breakdown: bool = True) -> None:
         """Generate hardware cost analysis visualization using integrated plotting system."""

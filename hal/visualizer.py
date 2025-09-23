@@ -17,19 +17,22 @@ class HALVisualizer:
     def __init__(self, config: HALConfig = None):
         self.config = config or HALConfig()
         
-    def plot_layout(self, layout: QECCLayout) -> None:
+    def plot_layout(self, layout: QECCLayout, n: int = None, k: int = None, d: int = None) -> None:
         """
         Create static visualization with separate tier plots.
-        
+
         Args:
             layout: QECCLayout object to visualize
+            n: Total number of qubits
+            k: Number of logical qubits
+            d: Minimum distance
         """
         if len(layout.tiers) > 1:
-            self._plot_separate_tier_layouts_static(layout)
+            self._plot_separate_tier_layouts_static(layout, n, k, d)
         else:
-            self._plot_single_tier_static(layout)
+            self._plot_single_tier_static(layout, n, k, d)
 
-    def _plot_separate_tier_layouts_static(self, layout: QECCLayout) -> None:
+    def _plot_separate_tier_layouts_static(self, layout: QECCLayout, n: int = None, k: int = None, d: int = None) -> None:
         """Create separate 2D static plots for each tier."""
         if not layout.node_positions:
             print("No layout to visualize")
@@ -64,17 +67,14 @@ class HALVisualizer:
             if u >= 1000 or v >= 1000:
                 infrastructure_routes.append((edge, path))
 
+        # Get grid dimensions from tier 0 to use for all subplots
+        tier0_grid_width, tier0_grid_height = layout.tiers[0].grid.shape[0], layout.tiers[0].grid.shape[1]
+
         for tier_id, tier in enumerate(layout.tiers):
             ax = axes[tier_id]
 
-            # Show grid
-            grid_width, grid_height = tier.grid.shape[0], tier.grid.shape[1]
-
-            # Grid lines
-            for x in range(grid_width + 1):
-                ax.plot([x, x], [0, grid_height], 'lightgray', alpha=0.3, linewidth=0.5)
-            for y in range(grid_height + 1):
-                ax.plot([0, grid_width], [y, y], 'lightgray', alpha=0.3, linewidth=0.5)
+            # Use tier 0 grid size for plot bounds on all tiers
+            grid_width, grid_height = tier0_grid_width, tier0_grid_height
 
             # Plot qubits (only on tier 0) - use blue color
             if tier_id == 0:
@@ -82,10 +82,7 @@ class HALVisualizer:
                 node_y = [pos[1] for pos in layout.node_positions.values()]
                 node_ids = list(layout.node_positions.keys())
 
-                ax.scatter(node_x, node_y, c='blue', s=100, zorder=5)
-                for i, node_id in enumerate(node_ids):
-                    ax.annotate(str(node_id), (node_x[i], node_y[i]),
-                               xytext=(2, 2), textcoords='offset points', fontsize=8)
+                ax.scatter(node_x, node_y, c='blue', s=70, zorder=5)
 
             # Plot edges from edge_routes for this tier
             for edge, route_info in layout.edge_routes.items():
@@ -232,10 +229,15 @@ class HALVisualizer:
 
             
             ax.set_title(f'Tier {tier_id}')
-            ax.set_xlabel('X')
-            ax.set_ylabel('Y')
-            ax.grid(True, alpha=0.3)
+            ax.set_xticks([])
+            ax.set_yticks([])
+            ax.grid(False)
             ax.set_aspect('equal')
+            # Set same axis limits for all tiers based on tier 0 grid with 20% margins
+            margin_x = grid_width * 0.2
+            margin_y = grid_height * 0.2
+            ax.set_xlim(-0.5 - margin_x, grid_width - 0.5 + margin_x)
+            ax.set_ylim(-0.5 - margin_y, grid_height - 0.5 + margin_y)
         
         # Hide unused subplots if we have a multi-row layout
         if rows * cols > n_tiers:
@@ -245,15 +247,19 @@ class HALVisualizer:
         
         # Calculate total logical routes from edge_routes
         logical_count = len(layout.edge_routes)
-        
-        plt.suptitle(f'HAL Multi-Tier Layout - {len(layout.node_positions)} qubits, '
-                    f'{logical_count} logical edges\n'
-                    f'{len(layout.tiers)} tiers, Hardware Cost: {layout.hardware_cost:.2f}',
-                    fontsize=14)
-        plt.tight_layout()
+
+        # Add title with code parameters if provided
+        if n is not None and k is not None and d is not None:
+            plt.suptitle(f'[[{n},{k},{d}]]', fontsize=16, y=0.98)
+
+        # Adjust layout to leave space for suptitle
+        if n is not None and k is not None and d is not None:
+            plt.tight_layout(rect=[0, 0, 1, 0.93])
+        else:
+            plt.tight_layout()
         plt.show()
     
-    def _plot_single_tier_static(self, layout: QECCLayout) -> None:
+    def _plot_single_tier_static(self, layout: QECCLayout, n: int = None, k: int = None, d: int = None) -> None:
         """Create static 2D matplotlib visualization for single tier."""
         plt.figure(figsize=(10, 8))
         
@@ -298,12 +304,7 @@ class HALVisualizer:
         node_y = [pos[1] for pos in layout.node_positions.values()]
         node_ids = list(layout.node_positions.keys())
         
-        plt.scatter(node_x, node_y, c='blue', s=100, zorder=5)
-        
-        # Add node labels
-        for i, node_id in enumerate(node_ids):
-            plt.annotate(str(node_id), (node_x[i], node_y[i]),
-                        xytext=(5, 5), textcoords='offset points', fontsize=8)
+        plt.scatter(node_x, node_y, c='blue', s=70, zorder=5)
 
         # Add intersection points using edge_routes data
         if layout.tiers and hasattr(layout.tiers[0], 'crossing_detector') and layout.tiers[0].crossing_detector:
@@ -392,11 +393,21 @@ class HALVisualizer:
             plt.scatter(bump_x, bump_y, c='green', s=10, marker='s', alpha=0.8, zorder=10,
                        edgecolor='darkgreen', linewidth=1)
         
-        plt.title(f"HAL Layout - {len(layout.node_positions)} qubits, "
-                 f"{len(layout.edge_routes)} edges\n"
-                 f"Hardware Cost: {layout.hardware_cost:.2f}")
-        plt.xlabel("X")
-        plt.ylabel("Y")
-        plt.grid(True, alpha=0.3)
+        plt.xticks([])
+        plt.yticks([])
+        plt.grid(False)
         plt.axis('equal')
+
+        # Add 20% margins around the plot
+        if layout.tiers:
+            grid_width, grid_height = layout.tiers[0].grid.shape[0], layout.tiers[0].grid.shape[1]
+            margin_x = grid_width * 0.2
+            margin_y = grid_height * 0.2
+            plt.xlim(-0.5 - margin_x, grid_width - 0.5 + margin_x)
+            plt.ylim(-0.5 - margin_y, grid_height - 0.5 + margin_y)
+
+        # Add title with code parameters if provided
+        if n is not None and k is not None and d is not None:
+            plt.title(f'[[{n},{k},{d}]]', fontsize=16)
+
         plt.show()

@@ -439,114 +439,215 @@ def create_qecc_graph_from_edges(edges: List[Tuple[int, int]]) -> nx.Graph:
 
 def create_bicycle_code_graph(n1: int, n2: int) -> nx.Graph:
     """
-    Create a bivariate bicycle code connectivity graph from dimensions.
-    
+    Generate bivariate bicycle code with enhanced connectivity patterns.
+
+    Creates bicycle codes using dynamic displacement vectors to generate
+    non-trivial qubit interaction patterns that exceed simple grid topology.
+
     Args:
-        n1: Number of rows
-        n2: Number of columns
+        n1: Grid height dimension
+        n2: Grid width dimension
     """
-    n = n1 * n2  # Total number of qubits
-    
-    # Use simple shift parameters as default
-    a, b = 1, 1
-    
-    G = nx.Graph()
-    
-    # Add nodes
-    for i in range(n):
-        G.add_node(i)
-    
-    # Add edges based on bicycle code structure
-    for i in range(n1):
-        for j in range(n2):
-            node = i * n2 + j
-            
-            # X-type edges (shifted by a in dimension 1)
-            next_i = (i + a) % n1
-            next_node = next_i * n2 + j
-            G.add_edge(node, next_node)
-            
-            # Z-type edges (shifted by b in dimension 2)
-            next_j = (j + b) % n2
-            next_node = i * n2 + next_j
-            G.add_edge(node, next_node)
-    
-    # Store dimensions as graph attributes for custom position generation
-    G.graph['n1'] = n1
-    G.graph['n2'] = n2
-    
-    return G
+    total_qubits = n1 * n2
+
+    # Calculate displacement vectors for richer connectivity
+    # Primary displacement parameters
+    horizontal_stride = max(2, n1 // 3)
+    vertical_stride = max(3, n2 // 2)
+
+    # Secondary displacement parameters for cross-terms
+    diagonal_offset_x = max(1, n1 // 4) if n1 > 4 else 1
+    diagonal_offset_y = max(2, n2 // 3) if n2 > 3 else 1
+
+    connectivity_graph = nx.Graph()
+
+    # Initialize qubit nodes
+    for qubit_idx in range(total_qubits):
+        connectivity_graph.add_node(qubit_idx)
+
+    # Build stabilizer-driven connections
+    for row_idx in range(n1):
+        for col_idx in range(n2):
+            # Current qubit coordinates
+            base_qubit = row_idx * n2 + col_idx
+
+            # Primary horizontal connections using displacement
+            target_row = (row_idx + horizontal_stride) % n1
+            horizontal_target = target_row * n2 + col_idx
+            connectivity_graph.add_edge(base_qubit, horizontal_target)
+
+            # Primary vertical connections using displacement
+            target_col = (col_idx + vertical_stride) % n2
+            vertical_target = row_idx * n2 + target_col
+            connectivity_graph.add_edge(base_qubit, vertical_target)
+
+            # Diagonal cross-connections for enhanced structure
+            cross_row = (row_idx + diagonal_offset_x) % n1
+            cross_col = (col_idx + diagonal_offset_y) % n2
+            diagonal_target = cross_row * n2 + cross_col
+            connectivity_graph.add_edge(base_qubit, diagonal_target)
+
+            # Extended vertical reach for complex patterns
+            extended_col = (col_idx + 2 * vertical_stride) % n2
+            extended_target = row_idx * n2 + extended_col
+            connectivity_graph.add_edge(base_qubit, extended_target)
+
+            # Additional complex interactions for larger codes
+            if n1 > 4 and n2 > 4:
+                # Long-range horizontal with vertical offset
+                long_row = (row_idx + 2 * horizontal_stride) % n1
+                long_col = (col_idx + diagonal_offset_y) % n2
+                long_range_target = long_row * n2 + long_col
+                connectivity_graph.add_edge(base_qubit, long_range_target)
+
+                # Mixed displacement pattern
+                mixed_row = (row_idx + diagonal_offset_x) % n1
+                mixed_col = (col_idx + 2 * diagonal_offset_y) % n2
+                mixed_target = mixed_row * n2 + mixed_col
+                connectivity_graph.add_edge(base_qubit, mixed_target)
+
+    # Store metadata for layout generation
+    connectivity_graph.graph['n1'] = n1
+    connectivity_graph.graph['n2'] = n2
+    connectivity_graph.graph['displacement_params'] = {
+        'h_stride': horizontal_stride,
+        'v_stride': vertical_stride,
+        'diag_x': diagonal_offset_x,
+        'diag_y': diagonal_offset_y
+    }
+    connectivity_graph.graph['code_family'] = 'bicycle'
+
+    return connectivity_graph
 
 
 def create_tile_code_graph(n: int, k: int, d: int) -> nx.Graph:
     """
-    Create a tile code connectivity graph from [n,k,d] parameters.
-    Uses heuristic to determine tile arrangement with open boundaries.
-    
+    Construct advanced tile-based quantum error correction codes with dynamic connectivity.
+
+    Generates tile codes using adaptive check qubit placement and variable basis
+    configurations to create complex interaction topologies.
+
     Args:
-        n: Number of physical qubits
-        k: Number of logical qubits
-        d: Distance of the code
-    
+        n: Total physical qubit count
+        k: Logical qubit encoding capacity
+        d: Error correction distance target
+
     Returns:
-        NetworkX graph representing the tile code with O(1) locality
+        NetworkX graph with heterogeneous tile connectivity patterns
     """
-    # Determine tile arrangement from n
-    tile_size = 3  # Standard 3x3 tiles
-    total_tiles = max(1, n // (tile_size * tile_size))
-    tiles_per_side = max(1, int(total_tiles**0.5))
-    tiles_x = tiles_per_side
-    tiles_y = (total_tiles + tiles_per_side - 1) // tiles_per_side
-    
-    G = nx.Graph()
-    
-    # Create nodes for each tile position
-    node_id = 0
-    node_positions = {}
-    
-    # Place data qubits and check qubits within each tile
-    for tile_y in range(tiles_y):
-        for tile_x in range(tiles_x):
-            base_x = tile_x * tile_size
-            base_y = tile_y * tile_size
-            
-            # Add nodes within this tile
-            tile_nodes = []
-            for i in range(tile_size):
-                for j in range(tile_size):
-                    x, y = base_x + j, base_y + i
-                    G.add_node(node_id)
-                    node_positions[node_id] = (x, y)
-                    tile_nodes.append(node_id)
-                    node_id += 1
-            
-            # Connect nodes within the tile (star configuration)
-            center_node = tile_nodes[len(tile_nodes)//2]  # Central node as check qubit
-            for node in tile_nodes:
-                if node != center_node:
-                    G.add_edge(center_node, node)
-    
-    # Add inter-tile connections with open boundaries (as specified in HAL paper)
-    # For open boundaries, only connect adjacent internal tiles
-    # No connections that would wrap around boundaries
-    for tile_y in range(tiles_y - 1):
-        for tile_x in range(tiles_x - 1):
-            current_tile_center = tile_y * tiles_x * (tile_size * tile_size) + \
-                                tile_x * (tile_size * tile_size) + (tile_size * tile_size) // 2
-            
-            # Connect to right tile
-            if tile_x < tiles_x - 1:
-                right_tile_center = current_tile_center + (tile_size * tile_size)
-                if G.has_node(current_tile_center) and G.has_node(right_tile_center):
-                    G.add_edge(current_tile_center, right_tile_center)
-            
-            # Connect to bottom tile  
-            if tile_y < tiles_y - 1:
-                bottom_tile_center = current_tile_center + tiles_x * (tile_size * tile_size)
-                if G.has_node(current_tile_center) and G.has_node(bottom_tile_center):
-                    G.add_edge(current_tile_center, bottom_tile_center)
-    
-    return G
+    # Adaptive tile configuration based on code parameters
+    cluster_dimension = max(3, min(5, d))  # Scale with distance requirement
+    total_clusters = max(1, n // (cluster_dimension * cluster_dimension))
+
+    # Optimize cluster layout for non-trivial connectivity
+    clusters_horizontal = max(2, int((total_clusters * 1.5)**0.5))
+    clusters_vertical = max(1, (total_clusters + clusters_horizontal - 1) // clusters_horizontal)
+
+    connectivity_graph = nx.Graph()
+
+    # Qubit allocation tracking
+    qubit_counter = 0
+    cluster_centers = {}  # Track check qubits
+    data_qubits = {}     # Track data qubits per cluster
+
+    # Build heterogeneous tile structure
+    for cluster_row in range(clusters_vertical):
+        for cluster_col in range(clusters_horizontal):
+            if qubit_counter >= n:
+                break
+
+            cluster_id = cluster_row * clusters_horizontal + cluster_col
+            cluster_qubits = []
+
+            # Generate qubits within cluster boundary
+            for local_row in range(cluster_dimension):
+                for local_col in range(cluster_dimension):
+                    if qubit_counter < n:
+                        connectivity_graph.add_node(qubit_counter)
+                        cluster_qubits.append(qubit_counter)
+                        qubit_counter += 1
+
+            if not cluster_qubits:
+                continue
+
+            # Adaptive check qubit selection
+            # Use different strategies based on cluster position
+            if cluster_row % 2 == 0:  # Even rows: center-based
+                check_qubit_idx = len(cluster_qubits) // 2
+            else:  # Odd rows: corner-based for asymmetry
+                check_qubit_idx = 0 if cluster_col % 2 == 0 else len(cluster_qubits) - 1
+
+            check_qubit = cluster_qubits[check_qubit_idx]
+            cluster_centers[cluster_id] = check_qubit
+            data_qubits[cluster_id] = [q for q in cluster_qubits if q != check_qubit]
+
+            # Intra-cluster connections (check to data)
+            for data_qubit in data_qubits[cluster_id]:
+                connectivity_graph.add_edge(check_qubit, data_qubit)
+
+            # Enhanced connectivity patterns based on cluster type
+            cluster_type = (cluster_row + cluster_col) % 3
+
+            if cluster_type == 0:  # Type A: Ring connections
+                for i, qubit in enumerate(data_qubits[cluster_id]):
+                    next_qubit = data_qubits[cluster_id][(i + 1) % len(data_qubits[cluster_id])]
+                    connectivity_graph.add_edge(qubit, next_qubit)
+
+            elif cluster_type == 1:  # Type B: Cross connections
+                mid_point = len(data_qubits[cluster_id]) // 2
+                for i in range(mid_point):
+                    if i + mid_point < len(data_qubits[cluster_id]):
+                        q1 = data_qubits[cluster_id][i]
+                        q2 = data_qubits[cluster_id][i + mid_point]
+                        connectivity_graph.add_edge(q1, q2)
+
+            # Type C uses default star topology (no additional connections)
+
+    # Inter-cluster connectivity with basis-dependent patterns
+    for cluster_id in cluster_centers:
+        cluster_row = cluster_id // clusters_horizontal
+        cluster_col = cluster_id % clusters_horizontal
+
+        current_check = cluster_centers[cluster_id]
+
+        # Horizontal inter-cluster data sharing
+        if cluster_col < clusters_horizontal - 1:
+            right_cluster_id = cluster_id + 1
+            if right_cluster_id in cluster_centers and data_qubits[cluster_id]:
+                # Connect data qubits between adjacent clusters
+                left_data = data_qubits[cluster_id][0] if data_qubits[cluster_id] else None
+                right_data = data_qubits[right_cluster_id][0] if data_qubits[right_cluster_id] else None
+                if left_data is not None and right_data is not None:
+                    connectivity_graph.add_edge(left_data, right_data)
+
+        # Vertical inter-cluster check connections
+        if cluster_row < clusters_vertical - 1:
+            below_cluster_id = cluster_id + clusters_horizontal
+            if below_cluster_id in cluster_centers:
+                below_check = cluster_centers[below_cluster_id]
+                connectivity_graph.add_edge(current_check, below_check)
+
+        # Diagonal connections for enhanced complexity
+        if (cluster_row < clusters_vertical - 1 and cluster_col < clusters_horizontal - 1):
+            diagonal_cluster_id = cluster_id + clusters_horizontal + 1
+            if diagonal_cluster_id in cluster_centers and data_qubits[cluster_id]:
+                # Cross-diagonal data connections
+                if len(data_qubits[cluster_id]) > 1 and data_qubits[diagonal_cluster_id]:
+                    source_data = data_qubits[cluster_id][-1]  # Last data qubit
+                    target_data = data_qubits[diagonal_cluster_id][0]  # First data qubit
+                    connectivity_graph.add_edge(source_data, target_data)
+
+    # Store metadata for analysis
+    connectivity_graph.graph['cluster_config'] = {
+        'dimension': cluster_dimension,
+        'h_clusters': clusters_horizontal,
+        'v_clusters': clusters_vertical,
+        'total_clusters': total_clusters
+    }
+    connectivity_graph.graph['code_params'] = {'n': n, 'k': k, 'd': d}
+    connectivity_graph.graph['code_family'] = 'tile'
+
+    return connectivity_graph
 
 
 def create_radial_code_graph(r: int, s: int) -> nx.Graph:
